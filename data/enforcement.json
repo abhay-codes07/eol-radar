@@ -1,0 +1,42 @@
+{
+  "verified": "2026-09-04",
+  "note": "Platform cut-off dates that endoflife.date does not model, because they belong to a platform rather than to a release line. Deliberately short: everything that can come from a live feed does. Each rule carries the primary source it was read from.",
+  "rules": [
+    {
+      "id": "github-actions-node20-removal",
+      "match": {"kind": "action", "using": ["node12", "node16", "node20"]},
+      "date": "2026-09-23",
+      "headline": "GitHub Actions runners remove Node 20",
+      "detail": "An action whose action.yml declares runs.using: node20 will not start once Node 20 is removed from the runner images. Node 24 has been the default since 2026-06-16, and the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION escape hatch stops working on the same day.",
+      "fix": "Upgrade to a release of the action that declares runs.using: node24.",
+      "source": "https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/"
+    },
+    {
+      "id": "vercel-node20-disabled",
+      "match": {"kind": "cloud-runtime", "platform": "vercel", "cycle": ["20"]},
+      "date": "2026-10-01",
+      "headline": "Vercel disables Node 20 for builds and functions",
+      "detail": "New deployments of a project set to Node 20 fail from this date. Deployments already live keep serving.",
+      "fix": "Raise the Node version in engines.node or .nvmrc and in the Vercel project settings.",
+      "source": "https://vercel.com/changelog/node-js-20-is-being-deprecated"
+    },
+    {
+      "id": "aws-lambda-python39-create-block",
+      "match": {"kind": "cloud-runtime", "platform": "aws-lambda", "cycle": ["python3.9"]},
+      "date": "2026-08-31",
+      "headline": "AWS Lambda blocks new python3.9 functions",
+      "detail": "New functions can no longer be created on python3.9; existing functions can no longer be updated after 2026-09-30. Functions already deployed keep running.",
+      "fix": "Move the function to a supported Python runtime such as python3.13.",
+      "source": "https://docs.aws.amazon.com/lambda/latest/dg/lambda-runtimes.html"
+    },
+    {
+      "id": "dependabot-python39-unsupported",
+      "match": {"kind": "runtime", "product": "python", "cycle": ["3.9"]},
+      "date": "2026-06-23",
+      "headline": "Dependabot stopped supporting Python 3.9",
+      "detail": "Dependabot no longer opens dependency update pull requests for projects pinned to Python 3.9.",
+      "fix": "Raise the pinned Python version so dependency updates keep arriving.",
+      "source": "https://github.blog/changelog/2026-05-19-upcoming-deprecation-of-python-3-9-for-dependabot/"
+    }
+  ]
+}

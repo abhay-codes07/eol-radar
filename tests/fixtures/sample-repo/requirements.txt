@@ -1,0 +1,3 @@
+# pinned for reproducible builds
+django==3.2.20
+requests==2.31.0

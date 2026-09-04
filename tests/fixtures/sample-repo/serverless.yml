@@ -1,0 +1,13 @@
+service: sample
+
+provider:
+  name: aws
+  runtime: python3.9
+  region: eu-west-1
+
+functions:
+  worker:
+    handler: handler.run
+  webhook:
+    handler: web.handler
+    runtime: nodejs20.x

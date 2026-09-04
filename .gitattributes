@@ -1,0 +1,7 @@
+# The Play runs on macOS and Linux. Keep everything LF in the repository so a
+# clone on those systems is byte-identical to what was tested.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.gif binary

@@ -1,0 +1,6 @@
+name: local thing
+description: A repo-local action that still declares an old runtime.
+
+runs:
+  using: node20
+  main: dist/index.js

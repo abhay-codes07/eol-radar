@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.eol-radar-cache/
+eol-radar-*.json
+.venv/
+venv/
+.DS_Store
+.idea/
+.vscode/
+*.log
