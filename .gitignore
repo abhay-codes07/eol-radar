@@ -8,3 +8,6 @@ venv/
 .idea/
 .vscode/
 *.log
+
+# Project brief and working notes: local only.
+CLAUDE.md
