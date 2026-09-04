@@ -29,7 +29,7 @@ DEAD — already out of support (3)
   ubuntu-20.04
     .github/workflows/ci.yml:9  died 2025-04-15 (507 days ago)
     why: github-actions-runner-images ubuntu-20.04 end of life 2025-04-15
-    fix: move to a maintained runner image label
+    fix: upgrade to ubuntu-24.04
 
   request@2.88.2
     package.json:9
@@ -43,7 +43,7 @@ DYING — loses support inside the horizon (2)
     .github/workflows/ci.yml:14  breaks 2026-09-23 (in 19 days)
     why: GitHub Actions runners remove Node 20 on 2026-09-23
     note: read from https://raw.githubusercontent.com/actions/checkout/v4/action.yml
-    fix: Upgrade to a release of the action that declares runs.using: node24.
+    fix: upgrade to actions/checkout@v5 (runs on node24)
 ```
 
 That `actions/checkout@v4` line is the one people do not expect. The tag looks
@@ -88,12 +88,16 @@ python scripts/eol_radar.py [options]
 
   --root PATH          repository to scan (default: .)
   --repo OWNER/NAME    public GitHub repository to shallow-clone and scan
+  --user NAME          scan every repository of a GitHub user or org and roll
+                       the results into one account-wide view
+  --max-repos N        how many repositories --user scans (10)
+  --include-forks      include forks, which --user skips by default
   --horizon DAYS       anything expiring within this window counts as dying (90)
   --no-packages        skip the dependency surface (fastest)
   --max-packages N     cap on package versions queried (300)
   --baseline FILE      previous --output json result, to show what changed
   --fail-on WHAT       none | dying | dead   exit 2 when matched (none)
-  --output VIEW        human | summary | json (human)
+  --output VIEW        human | summary | json | patch (human)
   --depth N            directory depth to search (8)
   --today YYYY-MM-DD   evaluate against a fixed date (for tests)
   --keep-work          keep the intermediate step files and print their path
@@ -105,6 +109,59 @@ Scan somebody else's repository without cloning it yourself:
 ```bash
 python scripts/eol_radar.py --repo actions/checkout
 ```
+
+### Your whole account at once
+
+One repository tells you what to fix. A whole account tells you what to fix
+**first**, because the same date usually takes out several repositories and one
+upgrade usually clears most of them.
+
+```bash
+python scripts/eol_radar.py --user your-github-name --max-repos 20
+```
+
+```
+SHARED DEADLINES — one date, several repositories
+------------------------------------------------------------------------------
+  2026-09-23  in 19 days     31 finding(s) across 5 repositories
+      GitHub Actions runners remove Node 20 on 2026-09-23
+      Agent-DNA-Transfer, VOLO, assay, lethe, opentelemetry-kpt-demo
+
+ONE FIX, MANY REPOSITORIES — ranked by reach
+------------------------------------------------------------------------------
+  actions/checkout@v4                          4 repo(s)
+      upgrade to actions/checkout@v5 (runs on node24)
+  nodejs 20 (engines.node)                     4 repo(s)
+      move to nodejs 24 (current LTS)
+```
+
+### The mechanical half of the fix, as a patch
+
+`--output patch` prints a unified diff for the changes it can make safely, and
+writes nothing itself. Every replacement is verified first: an action upgrade
+only appears once that release's own `action.yml` has been read and confirmed to
+run on `node24`, and a runner label only appears if endoflife.date still lists
+it as maintained.
+
+```bash
+python scripts/eol_radar.py --output patch > fix.patch
+git apply fix.patch
+python scripts/eol_radar.py            # the same findings are now gone
+```
+
+```diff
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+-    runs-on: ubuntu-20.04
++    runs-on: ubuntu-24.04
+-      - uses: actions/checkout@v4
+-      - uses: actions/setup-node@v4
++      - uses: actions/checkout@v5
++      - uses: actions/setup-node@v5
+```
+
+Runtime pins, base images and dependencies are reported but never rewritten.
+Those need a human decision, so putting them in a patch would be dishonest.
 
 Watch what changes, which is the point of running it more than once:
 
@@ -186,9 +243,11 @@ report down with it.
 ```
 scan_runtimes ─┐
 scan_containers┤
-scan_ci        ├─> resolve ─> join ─> human | summary | json
+scan_ci        ├─> resolve ─> join ─> human | summary | json | patch
 scan_cloud     ┤
 scan_packages ─┘
+
+--user: the whole pipeline per repository ─> aggregate ─> account view
 ```
 
 The five scanners are independent, read only the filesystem, and never touch the
@@ -207,9 +266,9 @@ python scripts/scan_ci.py --root . | python -m json.tool
 python -m unittest discover -s tests -v
 ```
 
-38 tests, no network, fixed clock. The verdict engine is tested against a stub
+55 tests, no network, fixed clock. The verdict engine is tested against a stub
 fact set so the expected output does not change when endoflife.date publishes a
-new release.
+new release. Verified on Python 3.10 (Windows) and 3.12 (Linux).
 
 ## Limits, stated plainly
 

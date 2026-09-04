@@ -22,6 +22,7 @@ EMPTY = os.path.join(ROOT, "tests", "fixtures", "empty-repo")
 
 sys.path.insert(0, SCRIPTS)
 
+import aggregate                # noqa: E402
 import common as c              # noqa: E402
 import eol_data as ed           # noqa: E402
 import join                     # noqa: E402
@@ -335,6 +336,103 @@ class TestVerdicts(unittest.TestCase):
         self.assertEqual([f["status"] for f in findings], ["DEAD", "DYING", "OK"])
 
 
+class TestRunnerUpgrade(unittest.TestCase):
+    """The runner map arrives key-sorted, so version order must be computed."""
+
+    CYCLES = {
+        "macos-13": {"is_maintained": False, "is_eol": True},
+        "macos-14": {"is_maintained": True, "is_eol": False},
+        "macos-26": {"is_maintained": True, "is_eol": False},
+        "ubuntu-20.04": {"is_maintained": False, "is_eol": True},
+        "ubuntu-22.04": {"is_maintained": True, "is_eol": False},
+        "ubuntu-24.04": {"is_maintained": True, "is_eol": False},
+        "ubuntu-24.04-arm64": {"is_maintained": True, "is_eol": False},
+        "windows-2022": {"is_maintained": True, "is_eol": False},
+        "windows-2025": {"is_maintained": True, "is_eol": False},
+        "windows-2025-vs2026": {"is_maintained": True, "is_eol": False},
+    }
+
+    def test_picks_the_newest_by_version_not_by_string(self):
+        self.assertEqual(join._runner_upgrade(self.CYCLES, "ubuntu-20.04"), "ubuntu-24.04")
+
+    def test_stays_in_the_family(self):
+        self.assertEqual(join._runner_upgrade(self.CYCLES, "macos-14"), "macos-26")
+
+    def test_keeps_the_architecture(self):
+        self.assertEqual(join._runner_upgrade(self.CYCLES, "ubuntu-22.04-arm64"), "ubuntu-24.04-arm64")
+
+    def test_skips_toolchain_variants(self):
+        self.assertEqual(join._runner_upgrade(self.CYCLES, "windows-2022"), "windows-2025")
+
+    def test_returns_nothing_when_already_newest(self):
+        self.assertIsNone(join._runner_upgrade(self.CYCLES, "ubuntu-24.04"))
+
+
+class TestPatchView(unittest.TestCase):
+    def _report(self, findings):
+        return {"findings": findings}
+
+    def test_emits_an_appliable_diff_for_verified_upgrades(self):
+        workspace = tempfile.mkdtemp()
+        try:
+            path = os.path.join(workspace, "wf.yml")
+            with open(path, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write("jobs:\n  a:\n    runs-on: ubuntu-20.04\n    steps:\n"
+                             "      - uses: actions/checkout@v4\n")
+            report = self._report([
+                {"kind": "runner", "what": "ubuntu-20.04", "where": "wf.yml:3",
+                 "raw": "runs-on: ubuntu-20.04", "upgrade_to": "ubuntu-24.04"},
+                {"kind": "action", "what": "actions/checkout@v4", "where": "wf.yml:5",
+                 "raw": "actions/checkout@v4", "upgrade_to": "actions/checkout@v5"},
+            ])
+            patch = join.render_patch(report, workspace)
+            self.assertIn("-    runs-on: ubuntu-20.04", patch)
+            self.assertIn("+    runs-on: ubuntu-24.04", patch)
+            self.assertIn("+      - uses: actions/checkout@v5", patch)
+            self.assertIn("--- a/wf.yml", patch)
+        finally:
+            import shutil
+            shutil.rmtree(workspace, ignore_errors=True)
+
+    def test_says_so_when_there_is_nothing_mechanical_to_do(self):
+        report = self._report([
+            {"kind": "runtime", "what": "python 3.9", "where": "a:1", "raw": "3.9"},
+        ])
+        self.assertIn("nothing to patch mechanically", join.render_patch(report, "."))
+
+    def test_never_patches_a_line_that_moved(self):
+        workspace = tempfile.mkdtemp()
+        try:
+            path = os.path.join(workspace, "wf.yml")
+            with open(path, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write("jobs:\n  a:\n    runs-on: ubuntu-24.04\n")
+            report = self._report([
+                {"kind": "runner", "what": "ubuntu-20.04", "where": "wf.yml:3",
+                 "raw": "runs-on: ubuntu-20.04", "upgrade_to": "ubuntu-24.04"},
+            ])
+            patch = join.render_patch(report, workspace)
+            self.assertIn("nothing to patch", patch)
+        finally:
+            import shutil
+            shutil.rmtree(workspace, ignore_errors=True)
+
+    def test_preserves_crlf_so_the_diff_still_matches(self):
+        workspace = tempfile.mkdtemp()
+        try:
+            path = os.path.join(workspace, "wf.yml")
+            with open(path, "wb") as handle:
+                handle.write(b"jobs:\r\n  a:\r\n    runs-on: ubuntu-20.04\r\n")
+            report = self._report([
+                {"kind": "runner", "what": "ubuntu-20.04", "where": "wf.yml:3",
+                 "raw": "runs-on: ubuntu-20.04", "upgrade_to": "ubuntu-24.04"},
+            ])
+            patch = join.render_patch(report, workspace)
+            self.assertIn("+    runs-on: ubuntu-24.04\r\n", patch)
+        finally:
+            import shutil
+            shutil.rmtree(workspace, ignore_errors=True)
+
+
 class TestDiff(unittest.TestCase):
     def test_line_shift_is_not_a_new_finding(self):
         before = {"kind": "action", "what": "actions/checkout@v4", "where": "wf.yml:24", "status": "DYING"}
@@ -365,6 +463,65 @@ class TestDiff(unittest.TestCase):
             self.assertEqual(diff["changed"][0]["to"], "DYING")
         finally:
             os.unlink(handle.name)
+
+
+class TestAccountView(unittest.TestCase):
+    """The account roll-up is what turns a report into a priority order."""
+
+    def _reports(self):
+        def report(name, findings, counts):
+            return {"repo": name, "counts": counts, "findings": findings, "generated_at": "2026-09-04"}
+        checkout = {"status": "DYING", "kind": "action", "what": "actions/checkout@v4",
+                    "date": "2026-09-23", "days": 19,
+                    "because": "GitHub Actions runners remove Node 20 on 2026-09-23",
+                    "move_to": "upgrade to actions/checkout@v5"}
+        python39 = {"status": "DEAD", "kind": "runtime", "what": "python 3.9",
+                    "date": "2025-10-31", "days": -308,
+                    "because": "python 3.9 end of life 2025-10-31",
+                    "move_to": "move to python 3.13"}
+        return [
+            report("alpha", [dict(checkout), dict(python39)],
+                   {"DEAD": 1, "DYING": 1, "WATCH": 0, "UNKNOWN": 0, "OK": 5}),
+            report("beta", [dict(checkout)],
+                   {"DEAD": 0, "DYING": 1, "WATCH": 2, "UNKNOWN": 0, "OK": 9}),
+            report("gamma", [],
+                   {"DEAD": 0, "DYING": 0, "WATCH": 0, "UNKNOWN": 1, "OK": 3}),
+        ]
+
+    def test_counts_repositories_not_just_findings(self):
+        summary = aggregate.build(self._reports(), "acme", "2026-09-04", 90)
+        self.assertEqual(summary["repositories_scanned"], 3)
+        self.assertEqual(summary["repositories_with_dead"], 1)
+        self.assertEqual(summary["repositories_with_dying"], 2)
+        self.assertEqual(summary["repositories_clean"], 1)
+
+    def test_a_shared_deadline_is_surfaced(self):
+        summary = aggregate.build(self._reports(), "acme", "2026-09-04", 90)
+        shared = summary["shared_deadlines"]
+        self.assertEqual([d["date"] for d in shared], ["2026-09-23"])
+        self.assertEqual(shared[0]["repo_count"], 2)
+        self.assertIn("Node 20", shared[0]["reason"])
+
+    def test_a_date_hitting_one_repository_is_not_a_shared_deadline(self):
+        summary = aggregate.build(self._reports(), "acme", "2026-09-04", 90)
+        self.assertNotIn("2025-10-31", [d["date"] for d in summary["shared_deadlines"]])
+
+    def test_offenders_rank_by_how_many_repositories_they_touch(self):
+        summary = aggregate.build(self._reports(), "acme", "2026-09-04", 90)
+        first = summary["top_offenders"][0]
+        self.assertEqual(first["what"], "actions/checkout@v4")
+        self.assertEqual(first["repo_count"], 2)
+        self.assertIn("checkout@v5", first["move_to"])
+
+    def test_repositories_are_ordered_worst_first(self):
+        summary = aggregate.build(self._reports(), "acme", "2026-09-04", 90)
+        self.assertEqual([r["repo"] for r in summary["repositories"]], ["alpha", "beta", "gamma"])
+
+    def test_renders_without_crashing_on_an_empty_account(self):
+        summary = aggregate.build([], "acme", "2026-09-04", 90)
+        self.assertEqual(summary["repositories_scanned"], 0)
+        self.assertIn("EOL Radar", aggregate.render_human(summary))
+        self.assertIn("acme", aggregate.render_summary(summary))
 
 
 class TestProcessContract(unittest.TestCase):

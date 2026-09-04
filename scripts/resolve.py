@@ -31,6 +31,10 @@ from urllib import error as urlerror
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import common as c
+import eol_data as ed
+
+LIVE_RUNTIMES = ed.LIVE_ACTION_RUNTIMES
+DEAD_RUNTIMES = ed.DEAD_ACTION_RUNTIMES
 
 USER_AGENT = "eol-radar (+https://github.com/abhay-codes07/eol-radar)"
 EOL_API = "https://endoflife.date/api/v1/products/"
@@ -176,6 +180,30 @@ def fetch_product(http, product):
 # ---------------------------------------------------------------------------
 # GitHub Actions: what runtime does this action really declare at this ref?
 # ---------------------------------------------------------------------------
+
+def find_action_upgrade(http, owner, repo, path, ref):
+    """Find the nearest major release of an action that runs on a live runtime.
+
+    Deliberately does not call the GitHub API: it just tries to read action.yml
+    at the next few major tags on raw.githubusercontent, which is not subject to
+    the 60-per-hour anonymous API budget. The lowest working major is returned,
+    because the smallest upgrade that fixes the problem is the one people take.
+    """
+    import re as _re
+    match = _re.match(r"^v?(\d+)(?:[.\d]*)$", (ref or "").strip())
+    if not match:
+        return None                      # a SHA or a moving branch: nothing to increment
+    current = int(match.group(1))
+    for major in range(current + 1, current + 4):
+        for candidate in ("v%d" % major, "%d" % major):
+            fact = fetch_action(http, owner, repo, path, candidate)
+            if not fact.get("known"):
+                continue
+            if fact.get("using") in LIVE_RUNTIMES:
+                return {"ref": candidate, "using": fact.get("using")}
+            break                        # tag exists but is still old; try the next major
+    return None
+
 
 def fetch_action(http, owner, repo, path, ref):
     prefix = RAW_GITHUB + "/".join([owner, repo, ref])
@@ -342,6 +370,19 @@ def main(argv):
         facts["action:" + key] = fact
         if fact.get("degraded"):
             degraded_actions += 1
+
+    # For every action stuck on a retired runtime, find the nearest major that
+    # is not. This is what turns "upgrade it" into "move to @v5".
+    stale = [(key, actions[key]) for key, fact in action_facts
+             if fact.get("known") and fact.get("using") in DEAD_RUNTIMES]
+    upgrades = run_parallel(
+        stale,
+        lambda pair: (pair[0], find_action_upgrade(http, pair[1]["owner"], pair[1]["repo"],
+                                                   pair[1].get("path") or "", pair[1]["ref"])),
+        workers)
+    for key, upgrade in upgrades:
+        if upgrade:
+            facts["action:" + key]["upgrade"] = upgrade
     ledger.append(_row("github actions (action.yml)", len(action_items), degraded_actions,
                        "declared runtime for " + str(len(action_items)) + " action refs"))
 

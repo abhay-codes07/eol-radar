@@ -7,8 +7,10 @@ and canonical JSON. No fact present in the JSON is absent from the human view.
 """
 
 import datetime
+import difflib
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -175,6 +177,13 @@ def evaluate(subject, facts, rules, today, horizon):
         if rule.get("fix"):
             finding["move_to"] = rule["fix"]
 
+    # A verified upgrade target beats any generic advice: we read that release's
+    # action.yml and confirmed it runs on a live runtime, so name it.
+    if finding.get("upgrade_to"):
+        finding["move_to"] = "upgrade to " + finding["upgrade_to"]
+        if finding.get("upgrade_using"):
+            finding["move_to"] += " (runs on " + str(finding["upgrade_using"]) + ")"
+
     _finalize(finding, today, horizon)
     return finding
 
@@ -216,10 +225,49 @@ def _evaluate_eol(finding, subject, lookup, facts, context):
         finding["notes"].append("extended security maintenance until " + eoes_date.isoformat())
     if release.get("latest"):
         finding["notes"].append("latest in this line: " + str(release["latest"]))
+    if product == "github-actions-runner-images":
+        replacement = _runner_upgrade(cycles, cycle)
+        if replacement:
+            finding["upgrade_to"] = replacement
+            finding["move_to"] = "move to " + replacement
+        return
+
     target = fact.get("newest_lts") or fact.get("newest_maintained")
     if target and target != cycle and not finding["move_to"]:
         suffix = " (current LTS)" if fact.get("newest_lts") == target else ""
         finding["move_to"] = "move to " + str(product) + " " + str(target) + suffix
+
+
+def _runner_upgrade(cycles, current):
+    """The newest maintained runner label of the same family and architecture.
+
+    ubuntu-20.04 should become ubuntu-24.04, not macos-26, and an arm label
+    stays on arm. The version is compared numerically rather than trusting the
+    order of the cycles mapping, which arrives key-sorted, so ubuntu-22.04 does
+    not win over ubuntu-24.04 on a string comparison. Toolchain variants such as
+    windows-2025-vs2026 are skipped: switching image flavour is not an upgrade.
+    """
+    family = str(current).split("-")[0]
+    wants_arm = "arm" in str(current)
+    best, best_key = None, None
+    for name, release in cycles.items():
+        if not release.get("is_maintained") or release.get("is_eol"):
+            continue
+        if not name.startswith(family + "-"):
+            continue
+        if ("arm" in name) != wants_arm:
+            continue
+        rest = name[len(family) + 1:]
+        match = re.match(r"^(\d+(?:\.\d+)*)", rest)
+        if not match:
+            continue
+        tail = rest[match.end():].strip("-")
+        if tail and tail not in ("arm", "arm64"):
+            continue
+        key = tuple(int(part) for part in match.group(1).split("."))
+        if best_key is None or key > best_key:
+            best, best_key = name, key
+    return best if best and best != current else None
     finding["_is_eol_flag"] = bool(release.get("is_eol"))
     finding["_eoas"] = eoas_date
 
@@ -241,6 +289,14 @@ def _evaluate_action(finding, subject, lookup, facts, context):
     finding["notes"].append("read from " + str(fact.get("source")))
     if using in ed.LIVE_ACTION_RUNTIMES:
         finding["status"] = "OK"
+    upgrade = fact.get("upgrade")
+    if upgrade and upgrade.get("ref"):
+        target = "%s/%s@%s" % (lookup.get("owner"), lookup.get("repo"), upgrade["ref"])
+        if lookup.get("path"):
+            target = "%s/%s/%s@%s" % (lookup.get("owner"), lookup.get("repo"),
+                                      lookup["path"], upgrade["ref"])
+        finding["upgrade_to"] = target
+        finding["upgrade_using"] = upgrade.get("using")
 
 
 def _evaluate_package(finding, subject, lookup, facts):
@@ -399,6 +455,79 @@ def render_human(report):
     return "\n".join(lines)
 
 
+
+# ---------------------------------------------------------------------------
+# Patch view: the mechanical half of the fix, as a diff you can apply
+# ---------------------------------------------------------------------------
+
+def render_patch(report, root):
+    """Emit a unified diff for the fixes that are safe to make mechanically.
+
+    Only findings with a verified replacement are included: an action upgrade
+    whose action.yml we actually read, or a runner label endoflife.date still
+    lists as maintained. Nothing is written to disk here; the diff goes to
+    stdout so a human can read it before `git apply` ever sees it.
+    """
+    edits = {}
+    skipped = []
+    for finding in report["findings"]:
+        target = finding.get("upgrade_to")
+        where = str(finding.get("where") or "")
+        head, sep, tail = where.rpartition(":")
+        if not target or not sep or not tail.isdigit():
+            continue
+        if finding.get("kind") not in ("action", "runner"):
+            continue
+        token = finding["raw"] if finding.get("kind") == "action" else finding.get("what")
+        if not token or token not in (finding.get("raw") or "") and finding.get("kind") == "action":
+            continue
+        edits.setdefault(head, []).append((int(tail), str(token), str(target), finding))
+
+    lines_out = []
+    changed_files = 0
+    for path in sorted(edits):
+        absolute = os.path.join(root, path.replace("/", os.sep))
+        original = c.read_text(absolute)
+        if not original:
+            skipped.append(path + " (unreadable)")
+            continue
+        # keepends preserves each line's own terminator, so a file checked out
+        # with CRLF produces a patch that still matches it byte for byte.
+        before = original.splitlines(keepends=True)
+        after = list(before)
+        touched = 0
+        for number, token, target, finding in sorted(edits[path]):
+            index = number - 1
+            if index < 0 or index >= len(after) or token not in after[index]:
+                skipped.append(path + ":" + str(number) + " (line moved or already changed)")
+                continue
+            after[index] = after[index].replace(token, target)
+            touched += 1
+        if not touched:
+            continue
+        changed_files += 1
+        lines_out.extend(difflib.unified_diff(
+            before, after, fromfile="a/" + path, tofile="b/" + path, n=3))
+
+    if not lines_out:
+        return "\n".join([
+            "# eol-radar: nothing to patch mechanically.",
+            "# Runtime pins, base images and dependencies need a human decision,",
+            "# so they are reported but never rewritten.",
+        ]) + "\n"
+    header = ["# eol-radar patch: " + str(changed_files) + " file(s)",
+              "# Every replacement below was verified against the upstream source.",
+              "# Review it, then: git apply <this file>"]
+    if skipped:
+        header.append("# skipped: " + "; ".join(skipped[:5]))
+    # Each diff line already carries the terminator of the file it came from, so
+    # the body is joined with nothing and only topped up if the last line lacked one.
+    body = "".join(lines_out)
+    if not body.endswith("\n"):
+        body += "\n"
+    return "\n".join(header) + "\n\n" + body
+
+
 def render_summary(report):
     counts = report["counts"]
     parts = [str(counts["DEAD"]) + " dead",
@@ -449,7 +578,7 @@ def build_diff(findings, baseline_path):
 
 
 VALUE_FLAGS = {"--facts", "--today", "--horizon", "--repo-name", "--fail-on",
-               "--enforcement", "--baseline", "--output"}
+               "--enforcement", "--baseline", "--output", "--root"}
 
 
 def main(argv):
@@ -540,6 +669,16 @@ def main(argv):
         sys.stdout.write(json.dumps(report, indent=2, sort_keys=True) + "\n")
     elif view == "summary":
         sys.stdout.write(render_summary(report) + "\n")
+    elif view == "patch":
+        # A patch must reach git byte for byte. Windows text-mode stdout would
+        # rewrite every LF as CRLF and the diff would stop matching the files it
+        # was generated from, so newline translation is turned off first.
+        if hasattr(sys.stdout, "reconfigure"):
+            try:
+                sys.stdout.reconfigure(newline="")
+            except (ValueError, OSError):
+                pass
+        sys.stdout.write(render_patch(report, c.arg_value(argv, "--root", ".")))
     else:
         sys.stdout.write(render_human(report) + "\n")
 
