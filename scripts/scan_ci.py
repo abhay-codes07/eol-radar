@@ -22,7 +22,13 @@ import eol_data as ed
 
 SURFACE = "ci"
 
-_RUNNER = re.compile(r"\b((?:ubuntu|macos|windows)-[A-Za-z0-9._-]+)\b")
+# GitHub-hosted runner labels are an OS name followed by a version or "latest",
+# optionally with an architecture or size suffix. Requiring that shape keeps
+# ordinary hyphenated words such as a file called ubuntu-git.Dockerfile from
+# being read as a runner.
+_RUNNER = re.compile(
+    r"\b((?:ubuntu|macos|windows)-(?:latest|\d[0-9.]*)"
+    r"(?:-(?:arm|arm64|large|xlarge|vs\d+))?)\b")
 _USES = re.compile(r"^\s*-?\s*uses\s*:\s*(?P<value>\S+)")
 _EXPRESSION = re.compile(r"\$\{\{")
 

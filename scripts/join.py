@@ -137,7 +137,12 @@ def evaluate(subject, facts, rules, today, horizon):
     else:
         reason = lookup.get("reason") or "no lifecycle source"
         if subject.get("using"):
+            # An action read straight off disk: judge it the same way as one
+            # fetched from a ref, so a local action already on node24 is OK
+            # rather than unknown.
             finding["because"] = "declares runs.using: " + subject["using"]
+            if subject["using"] in ed.LIVE_ACTION_RUNTIMES:
+                finding["status"] = "OK"
         elif reason.startswith("floating label"):
             finding["status"] = "OK"
             finding["because"] = reason

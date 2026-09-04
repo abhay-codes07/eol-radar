@@ -25,7 +25,6 @@ PIN_FILES = {
     ".php-version": "php",
     ".go-version": "go",
     ".terraform-version": "terraform",
-    ".crystal-version": "crystal",
     ".dotnet-version": "dotnet",
 }
 

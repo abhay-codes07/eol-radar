@@ -122,6 +122,14 @@ class TestScanners(unittest.TestCase):
         self.assertEqual(len(local), 1, refs)
         self.assertEqual(local[0]["using"], "node20")
 
+    def test_runner_label_shape_rejects_ordinary_hyphenated_words(self):
+        find = scan_ci._RUNNER.findall
+        for label in ("ubuntu-20.04", "ubuntu-latest", "macos-14", "windows-2022",
+                      "ubuntu-24.04-arm", "ubuntu-22.04-arm64", "windows-2025-vs2026"):
+            self.assertEqual(find(label), [label], label)
+        for text in ("ubuntu-git", "ubuntu-git.Dockerfile", "macos-build", "windows-helper"):
+            self.assertEqual(find(text), [], text)
+
     def test_ci_floating_runner_is_not_a_finding(self):
         subjects, _ = scan_ci.scan(SAMPLE)
         latest = [s for s in subjects if s["label"] == "ubuntu-latest"]
@@ -248,6 +256,17 @@ class TestVerdicts(unittest.TestCase):
         finding = verdict(c.subject("action", "actions/checkout@v5", "wf:26", "actions/checkout@v5",
                                     c.action_lookup("actions", "checkout", "", "v5")))
         self.assertEqual(finding["status"], "OK")
+
+    def test_local_action_is_judged_like_a_fetched_one(self):
+        stale = verdict(c.subject("action", "./x (local)", "wf:1", "./x",
+                                  c.no_lookup("local action read from disk"),
+                                  extra={"using": "node20", "resolved_locally": True}))
+        self.assertEqual(stale["status"], "DYING")
+        self.assertEqual(stale["date"], "2026-09-23")
+        current = verdict(c.subject("action", "./y (local)", "wf:2", "./y",
+                                    c.no_lookup("local action read from disk"),
+                                    extra={"using": "node24", "resolved_locally": True}))
+        self.assertEqual(current["status"], "OK")
 
     def test_unreadable_action_is_unknown_not_a_failure(self):
         finding = verdict(c.subject("action", "acme/thing@v1", "wf:3", "acme/thing@v1",
