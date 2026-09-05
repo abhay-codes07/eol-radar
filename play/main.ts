@@ -28,7 +28,7 @@
  *     default: 'none'
  *     description: 'none, dying or dead. The run fails when a finding of that severity exists, for use as a CI gate.'
  * metadata:
- *   version: 0.1.1
+ *   version: 0.1.2
  *   rote_version: "0.80.0"
  *   status: draft
  *   kind: atomic
