@@ -60,6 +60,11 @@ knows every date but nothing about your repo. Your scanner knows your
 dependencies but not that your runner image retires next month. Nobody joins the
 two, so the deadline arrives as a red build.
 
+Outdated is not the same as dead. An outdated-dependency checker tells you a
+newer release exists. This tells you the date on which what you have stops being
+supported or stops being accepted by the platform that runs it, whether or not
+you ever upgrade.
+
 Five things in a repo carry a death date. EOL Radar reads all five:
 
 | Surface | What it reads | What it catches |

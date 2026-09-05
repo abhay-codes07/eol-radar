@@ -72,7 +72,10 @@ step: that is what lets the five scanners become five parallel root steps.
 
 ```bash
 rote init eol-radar --seq
-export TARGET=/path/to/a/real/repo
+# Two real targets are already staged in WSL. starter-workflows is GitHub's own
+# template repository and carries eight node20 actions, which makes the capture
+# tell its own story; assay is one of yours.
+export TARGET=/home/abhay/eol-targets/starter-workflows
 
 rote proc run git clone --depth 1 --branch v0.1.0 https://github.com/abhay-codes07/eol-radar.git eol-radar-tool
 
@@ -92,7 +95,7 @@ Anchor it before anything can interrupt:
 ```bash
 rote play pending write eol-radar \
   --name eol-radar \
-  --description "Everything in a repo with a death date, soonest first: end-of-life runtimes, base images, CI runners and actions resolved to the Node runtime they really declare, cloud runtimes, deprecated packages. Read-only, no credentials." \
+  --description "One job: what in this repository stops working, and on what date. Reads runtime pins, base images, CI runners and actions (resolved to the Node runtime their action.yml really declares, so SHA pins are caught), cloud runtimes and packages, then prints everything with a death date, soonest first, with the exact version to move to. Outdated is not the same as dead: this is about dates a platform enforces, not the newest release. Read-only, no credentials." \
   --notes "fetch the scanner at a pinned tag, five independent filesystem scans in parallel, one network resolve, one join"
 ```
 
