@@ -1,0 +1,14 @@
+# Everything falls to the platform team unless something more specific matches.
+*                       @acme/platform
+
+# Build and packaging.
+/Dockerfile             @acme/build
+/docker-compose.yml     @acme/build
+
+# CI is owned by developer experience; the last matching pattern wins.
+/.github/               @acme/devex
+/.github/workflows/     @acme/devex ci-oncall@acme.example
+
+# Anything serverless belongs to the runtime team.
+*.tf                    @acme/runtime
+/serverless.yml         @acme/runtime

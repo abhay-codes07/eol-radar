@@ -26,6 +26,8 @@ import aggregate                # noqa: E402
 import common as c              # noqa: E402
 import eol_data as ed           # noqa: E402
 import join                     # noqa: E402
+import migrate                  # noqa: E402
+import ownership                # noqa: E402
 import scan_ci                  # noqa: E402
 import scan_cloud               # noqa: E402
 import scan_containers          # noqa: E402
@@ -213,7 +215,18 @@ STUB_FACTS = {
                                 "upstream": {"known": True, "archived": True}},
 }
 
-RULES = json.load(open(os.path.join(ROOT, "data", "enforcement.json"), encoding="utf-8"))["rules"]
+ENFORCEMENT_PATH = os.path.join(ROOT, "data", "enforcement.json")
+
+
+def read_enforcement():
+    with open(ENFORCEMENT_PATH, encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+# Load through the real loader so the tests exercise the compact Lambda table
+# exactly as a run does, rather than only the hand-written rules above it.
+ENFORCEMENT = join.load_enforcement(ENFORCEMENT_PATH)
+RULES = ENFORCEMENT["rules"]
 
 
 def verdict(subject, horizon=90):
@@ -307,12 +320,16 @@ class TestVerdicts(unittest.TestCase):
                       finding["notes"])
 
     def test_platform_rule_wins_when_it_is_earlier(self):
+        # AWS blocks new python3.9 functions on 2027-02-01 and blocks updates on
+        # 2027-03-03. endoflife.date publishes only the later one, so the earlier
+        # enforcement date has to come from the calendar and has to win.
         subject = c.subject("cloud-runtime", "AWS Lambda python3.9", "serverless.yml:5", "python3.9",
                             c.eol_lookup("aws-lambda", "python3.9"),
                             extra={"platform": "aws-lambda", "cycle": "python3.9"})
         finding = verdict(subject)
-        self.assertEqual(finding["date"], "2026-08-31")       # earlier than the 2027 line EOL
-        self.assertEqual(finding["status"], "DEAD")
+        self.assertEqual(finding["date"], "2027-02-01")
+        self.assertEqual(finding["status"], "WATCH")
+        self.assertIn("blocked from 2027-03-03", " ".join(finding["notes"]))
 
     def test_unknown_product_does_not_invent_a_date(self):
         finding = verdict(c.subject("image", "acme:1", "Dockerfile:1", "acme:1",
@@ -334,6 +351,123 @@ class TestVerdicts(unittest.TestCase):
         ]
         findings = sorted((verdict(s) for s in subjects), key=join.sort_key)
         self.assertEqual([f["status"] for f in findings], ["DEAD", "DYING", "OK"])
+
+
+class TestEnforcementCalendar(unittest.TestCase):
+    """The calendar is the one dataset this tool owns, so it is checked like data."""
+
+    def test_every_rule_is_dated_matchable_and_sourced(self):
+        self.assertTrue(RULES, "the calendar loaded empty")
+        for rule in RULES:
+            label = rule.get("id", "?")
+            self.assertTrue(rule.get("id"), "a rule has no id")
+            self.assertIsNotNone(join.parse_date(rule.get("date")),
+                                 label + " has an unparseable date")
+            self.assertTrue(rule.get("source", "").startswith("https://"),
+                            label + " has no primary source")
+            self.assertTrue(rule.get("headline"), label + " has no headline")
+            self.assertTrue(rule.get("match", {}).get("kind"), label + " matches nothing")
+
+    def test_rule_ids_are_unique(self):
+        ids = [rule["id"] for rule in RULES]
+        self.assertEqual(len(ids), len(set(ids)))
+
+    def test_the_file_records_when_it_was_last_verified(self):
+        self.assertIsNotNone(join.parse_date(ENFORCEMENT.get("verified")))
+
+    def test_lambda_table_expands_into_block_create_rules(self):
+        raw = read_enforcement()
+        runtimes = raw["aws_lambda_phases"]["runtimes"]
+        expanded = join.expand_lambda_phases(raw["aws_lambda_phases"])
+        self.assertEqual(len(expanded), len(runtimes))
+        for rule in expanded:
+            self.assertEqual(rule["match"]["platform"], "aws-lambda")
+            self.assertEqual(len(rule["match"]["cycle"]), 1)
+
+    def test_block_create_never_lands_after_block_update(self):
+        raw = read_enforcement()
+        for runtime, phases in raw["aws_lambda_phases"]["runtimes"].items():
+            create = join.parse_date(phases.get("block_create"))
+            update = join.parse_date(phases.get("block_update"))
+            self.assertIsNotNone(create, runtime)
+            self.assertIsNotNone(update, runtime)
+            self.assertLessEqual(create, update, runtime + " blocks updates before creates")
+
+
+class TestOwnership(unittest.TestCase):
+    TABLE = {"source": "CODEOWNERS", "rules": ownership.parse(
+        "*               @org/platform\n"
+        "/Dockerfile     @org/build\n"
+        "/.github/       @org/devex\n"
+        "/.github/workflows/ @org/ci oncall@example.com\n"
+        "*.tf            @org/runtime\n"
+        "docs/**         @org/docs\n"
+        "# a comment\n"
+        "/nobody\n")}
+
+    def test_last_matching_pattern_wins(self):
+        self.assertEqual(ownership.owners_for(self.TABLE, "README.md"), ["@org/platform"])
+        self.assertEqual(ownership.owners_for(self.TABLE, "Dockerfile"), ["@org/build"])
+        self.assertEqual(ownership.owners_for(self.TABLE, ".github/dependabot.yml"), ["@org/devex"])
+
+    def test_a_dotfile_directory_is_not_stripped(self):
+        # lstrip("./") would turn .github into github and miss the pattern.
+        self.assertEqual(ownership.owners_for(self.TABLE, ".github/workflows/ci.yml"),
+                         ["@org/ci", "oncall@example.com"])
+
+    def test_extension_patterns_match_at_any_depth(self):
+        self.assertEqual(ownership.owners_for(self.TABLE, "infra/aws/main.tf"), ["@org/runtime"])
+
+    def test_double_star_crosses_directories(self):
+        self.assertEqual(ownership.owners_for(self.TABLE, "docs/a/b/c.md"), ["@org/docs"])
+
+    def test_a_pattern_with_no_owner_is_ignored(self):
+        self.assertEqual(ownership.owners_for(self.TABLE, "nobody"), ["@org/platform"])
+
+    def test_email_and_team_owners_are_both_accepted(self):
+        owners = ownership.owners_for(self.TABLE, ".github/workflows/release.yml")
+        self.assertIn("oncall@example.com", owners)
+
+    def test_unparseable_patterns_are_skipped_not_guessed(self):
+        table = {"rules": ownership.parse("[abc]  @org/x\n!excluded  @org/y\n")}
+        self.assertEqual(ownership.owners_for(table, "abc"), [])
+
+    def test_quarter_bucketing(self):
+        self.assertEqual(ownership.quarter_of("2026-09-23"), "2026-Q3")
+        self.assertEqual(ownership.quarter_of("2026-01-01"), "2026-Q1")
+        self.assertEqual(ownership.quarter_of("2026-12-31"), "2026-Q4")
+        self.assertIsNone(ownership.quarter_of(None))
+        self.assertIsNone(ownership.quarter_of("nonsense"))
+
+    def test_exposure_groups_by_quarter_and_keeps_undated_last(self):
+        findings = [
+            {"status": "DYING", "date": "2026-09-23", "where": "a.yml:1", "owners": ["@org/ci"]},
+            {"status": "DEAD", "date": "2026-08-01", "where": "b:1", "owners": []},
+            {"status": "DEAD", "date": None, "where": "c:1", "owners": ["@org/ci"]},
+            {"status": "OK", "date": "2026-09-23", "where": "d:1", "owners": ["@org/ci"]},
+        ]
+        buckets = ownership.exposure(findings)
+        self.assertEqual([b["quarter"] for b in buckets], ["2026-Q3", "undated"])
+        third = buckets[0]
+        self.assertEqual(third["count"], 2)          # the OK finding is not work
+        self.assertEqual(third["unowned"], 1)
+
+    def test_work_by_owner_is_ordered_by_the_soonest_deadline(self):
+        findings = [
+            {"status": "DYING", "date": "2026-11-01", "owners": ["@late"]},
+            {"status": "DEAD", "date": "2026-01-01", "owners": ["@early"]},
+            {"status": "DEAD", "date": "2026-02-01", "owners": []},
+        ]
+        rows = ownership.by_owner(findings)
+        self.assertEqual([r["owner"] for r in rows], ["@early", "(unowned)", "@late"])
+
+    def test_a_repository_without_codeowners_reports_nothing_owned(self):
+        table = ownership.load(EMPTY)
+        self.assertIsNone(table["source"])
+        findings = [{"status": "DEAD", "date": "2026-01-01", "where": "a:1"}]
+        coverage = ownership.annotate(findings, table)
+        self.assertEqual(coverage["findings_owned"], 0)
+        self.assertEqual(findings[0]["owners"], [])
 
 
 class TestRunnerUpgrade(unittest.TestCase):
@@ -431,6 +565,100 @@ class TestPatchView(unittest.TestCase):
         finally:
             import shutil
             shutil.rmtree(workspace, ignore_errors=True)
+
+
+class TestMigration(unittest.TestCase):
+    """Moving off a runtime has to change every declaration or none of them."""
+
+    SUPPORTED = ["python3.13", "nodejs24.x"]
+
+    def _repo(self, files):
+        workspace = tempfile.mkdtemp()
+        for name, body in files.items():
+            path = os.path.join(workspace, name.replace("/", os.sep))
+            directory = os.path.dirname(path)
+            if directory and not os.path.isdir(directory):
+                os.makedirs(directory)
+            with open(path, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(body)
+        return workspace
+
+    def test_guarded_match_will_not_corrupt_a_longer_number(self):
+        pattern = migrate._guarded("20")
+        self.assertTrue(pattern.search("FROM node:20-alpine"))
+        self.assertTrue(pattern.search('"node": ">=20.0.0"'))
+        self.assertIsNone(pattern.search("# copyright 2026"))
+        self.assertIsNone(pattern.search("python-version: 3.20.1"))
+
+    def test_every_declaration_of_one_runtime_moves_together(self):
+        workspace = self._repo({
+            ".python-version": "3.9.18\n",
+            "pyproject.toml": 'requires-python = ">=3.9"\n',
+            "Dockerfile": "FROM python:3.9-slim\n",
+            "serverless.yml": "provider:\n  runtime: python3.9\n",
+        })
+        try:
+            report = {"findings": [
+                {"kind": "runtime", "product": "python", "cycle": "3.9", "status": "DEAD",
+                 "where": ".python-version:1", "raw": "3.9.18", "what": "python 3.9"},
+                {"kind": "runtime", "product": "python", "cycle": "3.9", "status": "DEAD",
+                 "where": "pyproject.toml:1", "raw": ">=3.9", "what": "requires-python"},
+                {"kind": "image", "product": "python", "cycle": "3.9", "status": "DEAD",
+                 "where": "Dockerfile:1", "raw": "python:3.9-slim", "what": "python:3.9-slim"},
+                {"kind": "cloud-runtime", "product": "aws-lambda", "cycle": "python3.9",
+                 "status": "DEAD", "where": "serverless.yml:2", "raw": "runtime: python3.9",
+                 "what": "AWS Lambda python3.9"},
+            ]}
+            result = migrate.plan(report, workspace, "python", "3.13", self.SUPPORTED)
+            self.assertEqual(len(result["edits"]), 4)
+            self.assertEqual(result["files_changed"], 4)
+            diff = result["diff"]
+            self.assertIn("+3.13", diff)
+            self.assertIn('+requires-python = ">=3.13"', diff)
+            self.assertIn("+FROM python:3.13-slim", diff)
+            self.assertIn("+  runtime: python3.13", diff)
+        finally:
+            import shutil
+            shutil.rmtree(workspace, ignore_errors=True)
+
+    def test_a_managed_runtime_is_migrated_with_its_language(self):
+        # The Lambda finding is filed under aws-lambda, not python, and must
+        # still move when Python moves.
+        finding = {"kind": "cloud-runtime", "product": "aws-lambda", "cycle": "python3.9"}
+        self.assertTrue(migrate._concerns(finding, "python"))
+        self.assertFalse(migrate._concerns(finding, "nodejs"))
+
+    def test_an_unsupported_lambda_target_is_refused(self):
+        finding = {"kind": "cloud-runtime", "product": "aws-lambda", "cycle": "python3.9",
+                   "status": "DEAD", "where": "s.yml:1", "raw": "runtime: python3.9"}
+        # 3.99 does not exist, so no identifier is offered rather than a bad one.
+        self.assertIsNone(migrate.rewrite_for(finding, "python", "3.99", self.SUPPORTED))
+        self.assertIsNotNone(migrate.rewrite_for(finding, "python", "3.13", self.SUPPORTED))
+
+    def test_a_version_behind_a_variable_is_refused_with_a_reason(self):
+        workspace = self._repo({"Dockerfile": "ARG V=20\nFROM node:${V}-alpine\n"})
+        try:
+            report = {"findings": [
+                {"kind": "image", "product": "nodejs", "cycle": "20", "status": "DEAD",
+                 "where": "Dockerfile:2", "raw": "node:20-alpine", "what": "node:20-alpine"},
+            ]}
+            result = migrate.plan(report, workspace, "nodejs", "24", self.SUPPORTED)
+            self.assertEqual(result["edits"], [])
+            self.assertIn("variable", result["skipped"][0]["why"])
+        finally:
+            import shutil
+            shutil.rmtree(workspace, ignore_errors=True)
+
+    def test_a_runtime_already_on_target_is_left_alone(self):
+        finding = {"kind": "runtime", "product": "python", "cycle": "3.13",
+                   "where": "a:1", "raw": "3.13"}
+        self.assertIsNone(migrate.rewrite_for(finding, "python", "3.13", self.SUPPORTED))
+
+    def test_the_plan_always_states_what_it_cannot_do(self):
+        result = migrate.plan({"findings": []}, ".", "python", "3.13", self.SUPPORTED)
+        rendered = migrate.render(result)
+        self.assertIn("Regenerate the lockfile", rendered)
+        self.assertIn("Nothing could be migrated automatically", rendered)
 
 
 class TestDiff(unittest.TestCase):

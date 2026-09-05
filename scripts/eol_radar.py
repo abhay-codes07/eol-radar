@@ -50,6 +50,10 @@ usage: python scripts/eol_radar.py [options]
   --output VIEW        human | summary | json | patch (human)
                        patch prints a unified diff of the mechanical fixes,
                        ready for `git apply`. It writes nothing itself.
+  --migrate P[=TARGET] move the repository off a runtime in every place it is
+                       declared, as one coordinated diff plus a checklist of
+                       what a text substitution cannot do. The target defaults
+                       to the current supported release. e.g. --migrate python
   --depth N            directory depth to search (8)
   --today YYYY-MM-DD   evaluate against a fixed date (for tests)
   --keep-work          keep the intermediate step files and print their path
@@ -195,6 +199,7 @@ def main(argv):
     baseline = c.arg_value(argv, "--baseline")
     fail_on = c.arg_value(argv, "--fail-on", "none")
     output = c.arg_value(argv, "--output", "human")
+    migrate_spec = c.arg_value(argv, "--migrate")
     today = c.arg_value(argv, "--today")
     include_packages = not c.arg_flag(argv, "--no-packages")
     keep_work = c.arg_flag(argv, "--keep-work")
@@ -238,11 +243,13 @@ def main(argv):
             join_step += ["--baseline", baseline]
         if today:
             join_step += ["--today", today]
+        if migrate_spec:
+            join_step += ["--migrate", migrate_spec]
 
         # The patch view has to survive this hop byte for byte: newline
         # translation here would undo the care taken in join.py and produce a
         # diff git refuses to apply.
-        text_mode = output != "patch"
+        text_mode = output != "patch" and not migrate_spec
         result = subprocess.run([sys.executable] + join_step, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, universal_newlines=text_mode)
         if text_mode:

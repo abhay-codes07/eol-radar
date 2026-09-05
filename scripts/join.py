@@ -17,6 +17,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import common as c
 import eol_data as ed
+import migrate
+import ownership
 
 STATUS_RANK = {"DEAD": 0, "DYING": 1, "WATCH": 2, "UNKNOWN": 3, "OK": 4}
 STATUS_ORDER = ["DEAD", "DYING", "WATCH", "UNKNOWN", "OK"]
@@ -44,6 +46,21 @@ HEADLINES = {
     "UNKNOWN": "no lifecycle data",
     "OK": "supported",
 }
+
+
+
+def _write_bytes_safe(text):
+    """Write a diff without newline translation.
+
+    Windows text-mode stdout rewrites every LF as CRLF, which makes a patch stop
+    matching the files it was generated from.
+    """
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(newline="")
+        except (ValueError, OSError):
+            pass
+    sys.stdout.write(text)
 
 
 def parse_date(value):
@@ -80,7 +97,49 @@ def load_enforcement(path):
     data = c.read_json(path)
     if not isinstance(data, dict):
         return {"verified": None, "rules": []}
-    return data
+    rules = list(data.get("rules") or [])
+    rules.extend(expand_lambda_phases(data.get("aws_lambda_phases") or {}))
+    lambda_block = data.get("aws_lambda_phases") or {}
+    return {"verified": data.get("verified"), "rules": rules,
+            "schema": data.get("schema"), "note": data.get("note"),
+            "lambda_supported": lambda_block.get("supported") or []}
+
+
+def expand_lambda_phases(block):
+    """Turn the compact Lambda table into one rule per block-create date.
+
+    Block-update is left to endoflife.date, which publishes it as this
+    product's end-of-life date. Block-create lands earlier and nothing else
+    publishes it, so it is the date worth surfacing.
+    """
+    source = block.get("source")
+    checked = block.get("checked")
+    rules = []
+    for runtime, phases in sorted((block.get("runtimes") or {}).items()):
+        create = phases.get("block_create")
+        if not create:
+            continue
+        detail = ["Deprecated " + str(phases.get("deprecated")) + "."]
+        detail.append("New functions blocked from " + create + ".")
+        if phases.get("block_update"):
+            detail.append("Updates to existing functions blocked from "
+                          + phases["block_update"] + ", which is the date that strands a service.")
+        detail.append("Functions already deployed keep running.")
+        if phases.get("os"):
+            detail.append("Runs on " + phases["os"] + ".")
+        if checked:
+            detail.append("AWS has moved these dates before; read from the AWS "
+                          "documentation on " + checked + ".")
+        rules.append({
+            "id": "aws-lambda-block-create-" + runtime,
+            "match": {"kind": "cloud-runtime", "platform": "aws-lambda", "cycle": [runtime]},
+            "date": create,
+            "headline": "AWS Lambda blocks new " + runtime + " functions",
+            "detail": " ".join(detail),
+            "fix": "Move the function to a Lambda runtime that is still supported.",
+            "source": source,
+        })
+    return rules
 
 
 def rule_matches(rule, context):
@@ -205,6 +264,7 @@ def _evaluate_eol(finding, subject, lookup, facts, context):
                               + " does not match a tracked " + str(product) + " release line")
         return
     context["cycle"] = cycle
+    finding["product"] = product
     release = cycles[cycle]
     eol_date = parse_date(release.get("eol"))
     eoas_date = parse_date(release.get("eoas"))
@@ -442,6 +502,27 @@ def render_human(report):
             lines.append("  ~ moved   " + str(item["what"]) + "  " + str(item["from"]) + " -> " + str(item["to"]))
         lines.append("")
 
+    exposure = report.get("exposure_by_quarter") or []
+    if exposure:
+        lines.append("EXPOSURE BY QUARTER" + DASH + "when the work lands")
+        lines.append("-" * 78)
+        for bucket in exposure:
+            parts = ["%d %s" % (count, status.lower())
+                     for status, count in sorted(bucket["statuses"].items(),
+                                                 key=lambda kv: STATUS_RANK.get(kv[0], 9))]
+            lines.append("  %-10s %-34s" % (bucket["quarter"], ", ".join(parts)))
+            if bucket["owners"]:
+                shown = ", ".join("%s (%d)" % (owner, count) for owner, count in bucket["owners"][:4])
+                lines.append("      owners: " + shown)
+            if bucket["unowned"]:
+                lines.append("      unowned: %d" % bucket["unowned"])
+        source = (report.get("ownership") or {}).get("source")
+        if source:
+            lines.append("  owners read from " + source)
+        else:
+            lines.append("  no CODEOWNERS file, so nothing is attributed to a team")
+        lines.append("")
+
     lines.append("LEDGER")
     lines.append("-" * 78)
     for row in report["ledger"]:
@@ -578,7 +659,7 @@ def build_diff(findings, baseline_path):
 
 
 VALUE_FLAGS = {"--facts", "--today", "--horizon", "--repo-name", "--fail-on",
-               "--enforcement", "--baseline", "--output", "--root"}
+               "--enforcement", "--baseline", "--output", "--root", "--migrate"}
 
 
 def main(argv):
@@ -640,6 +721,11 @@ def main(argv):
     for finding in findings:
         counts[finding["status"]] = counts.get(finding["status"], 0) + 1
 
+    # Who has to do the work, and by when.
+    scan_root = c.arg_value(argv, "--root", ".")
+    codeowners = ownership.load(scan_root) if os.path.isdir(scan_root) else {"source": None, "rules": []}
+    coverage = ownership.annotate(findings, codeowners)
+
     report = {
         "tool": "eol-radar",
         "schema": 1,
@@ -650,6 +736,9 @@ def main(argv):
         "findings": findings,
         "ledger": ledger,
         "enforcement_verified": enforcement.get("verified"),
+        "ownership": coverage,
+        "exposure_by_quarter": ownership.exposure(findings),
+        "work_by_owner": ownership.by_owner(findings),
         "data_sources": [
             {"name": "endoflife.date", "url": "https://endoflife.date/api/v1/products"},
             {"name": "deps.dev", "url": "https://api.deps.dev/v3"},
@@ -664,21 +753,33 @@ def main(argv):
     if baseline_path:
         report["diff"] = build_diff(findings, baseline_path)
 
+    # A migration replaces the ordinary views: it answers a different question,
+    # which is "move this repository off that runtime everywhere at once".
+    spec = c.arg_value(argv, "--migrate")
+    if spec:
+        product, _, target = spec.partition("=")
+        product = product.strip()
+        target = target.strip()
+        if not target:
+            fact = facts.get("eol:" + product) or {}
+            target = fact.get("newest_lts") or fact.get("newest_maintained") or ""
+        if not product or not target:
+            c.fail("--migrate needs a product, and a target this run could not infer. "
+                   "Try --migrate " + (product or "python") + "=<version>")
+        result = migrate.plan(report, scan_root, product, target,
+                              enforcement.get("lambda_supported"))
+        _write_bytes_safe(migrate.render(result))
+        if not result["edits"]:
+            sys.exit(3)
+        return
+
     view = (c.arg_value(argv, "--output", "human") or "human").lower()
     if view == "json":
         sys.stdout.write(json.dumps(report, indent=2, sort_keys=True) + "\n")
     elif view == "summary":
         sys.stdout.write(render_summary(report) + "\n")
     elif view == "patch":
-        # A patch must reach git byte for byte. Windows text-mode stdout would
-        # rewrite every LF as CRLF and the diff would stop matching the files it
-        # was generated from, so newline translation is turned off first.
-        if hasattr(sys.stdout, "reconfigure"):
-            try:
-                sys.stdout.reconfigure(newline="")
-            except (ValueError, OSError):
-                pass
-        sys.stdout.write(render_patch(report, c.arg_value(argv, "--root", ".")))
+        _write_bytes_safe(render_patch(report, scan_root))
     else:
         sys.stdout.write(render_human(report) + "\n")
 

@@ -1,13 +1,14 @@
 {
-  "verified": "2026-09-04",
-  "note": "Platform cut-off dates that endoflife.date does not model, because they belong to a platform rather than to a release line. Deliberately short: everything that can come from a live feed does. Each rule carries the primary source it was read from.",
+  "schema": 2,
+  "verified": "2026-09-05",
+  "note": "Platform enforcement events: the dates on which a platform stops accepting something, as opposed to the date a release line stops being maintained. endoflife.date models release lines well and these dates badly, because they belong to a vendor's policy rather than to the software. Each entry names the primary source it was read from and the date that source was last checked. Anything a live feed can answer is not duplicated here.",
   "rules": [
     {
       "id": "github-actions-node20-removal",
       "match": {"kind": "action", "using": ["node12", "node16", "node20"]},
       "date": "2026-09-23",
       "headline": "GitHub Actions runners remove Node 20",
-      "detail": "An action whose action.yml declares runs.using: node20 will not start once Node 20 is removed from the runner images. Node 24 has been the default since 2026-06-16, and the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION escape hatch stops working on the same day.",
+      "detail": "An action whose action.yml declares runs.using: node20 will not start once Node 20 is removed from the runner images. Node 24 became the default on 2026-06-16, and the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION escape hatch stops working on the same day.",
       "fix": "Upgrade to a release of the action that declares runs.using: node24.",
       "source": "https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/"
     },
@@ -16,27 +17,59 @@
       "match": {"kind": "cloud-runtime", "platform": "vercel", "cycle": ["20"]},
       "date": "2026-10-01",
       "headline": "Vercel disables Node 20 for builds and functions",
-      "detail": "New deployments of a project set to Node 20 fail from this date. Deployments already live keep serving.",
+      "detail": "New deployments of a project set to Node 20 fail from this date. Deployments already live keep serving, and containers are unaffected.",
       "fix": "Raise the Node version in engines.node or .nvmrc and in the Vercel project settings.",
       "source": "https://vercel.com/changelog/node-js-20-is-being-deprecated"
-    },
-    {
-      "id": "aws-lambda-python39-create-block",
-      "match": {"kind": "cloud-runtime", "platform": "aws-lambda", "cycle": ["python3.9"]},
-      "date": "2026-08-31",
-      "headline": "AWS Lambda blocks new python3.9 functions",
-      "detail": "New functions can no longer be created on python3.9; existing functions can no longer be updated after 2026-09-30. Functions already deployed keep running.",
-      "fix": "Move the function to a supported Python runtime such as python3.13.",
-      "source": "https://docs.aws.amazon.com/lambda/latest/dg/lambda-runtimes.html"
     },
     {
       "id": "dependabot-python39-unsupported",
       "match": {"kind": "runtime", "product": "python", "cycle": ["3.9"]},
       "date": "2026-06-23",
       "headline": "Dependabot stopped supporting Python 3.9",
-      "detail": "Dependabot no longer opens dependency update pull requests for projects pinned to Python 3.9.",
+      "detail": "Dependabot no longer opens dependency update pull requests for projects pinned to Python 3.9, so the repository silently stops receiving updates.",
       "fix": "Raise the pinned Python version so dependency updates keep arriving.",
       "source": "https://github.blog/changelog/2026-05-19-upcoming-deprecation-of-python-3-9-for-dependabot/"
+    },
+    {
+      "id": "github-runner-toolcache-node20-removed",
+      "match": {"kind": "ci-tool", "product": "nodejs", "cycle": ["20"]},
+      "date": "2026-05-26",
+      "headline": "Node 20 was removed from the runner toolcache",
+      "detail": "Node.js 20 was removed from the toolcache on all runner images between 2026-05-19 and 2026-05-26, and the default moved to Node 22 where Node 20 had been the default. A workflow asking for Node 20 now pays a download on every run instead of using the preinstalled copy.",
+      "fix": "Ask setup-node for a version that is still in the toolcache.",
+      "source": "https://github.com/actions/runner-images/issues/14029"
     }
-  ]
+  ],
+  "aws_lambda_phases": {
+    "source": "https://docs.aws.amazon.com/lambda/latest/dg/lambda-runtimes.html",
+    "checked": "2026-09-05",
+    "note": "Lambda retires a runtime in three steps. Deprecation stops the patches. Block-create stops new functions. Block-update stops changing the ones you have, and that is the date that strands a service. endoflife.date publishes the deprecation and block-update dates for this product but not block-create, which is the earlier of the two enforcement events. AWS has repeatedly moved these dates later in response to customer feedback, so a stale copy is worse than none: this table records when it was last read from the AWS documentation.",
+    "runtimes": {
+      "python3.9": {"deprecated": "2025-12-15", "block_create": "2027-02-01", "block_update": "2027-03-03", "os": "Amazon Linux 2"},
+      "python3.8": {"deprecated": "2024-10-14", "block_create": "2027-02-01", "block_update": "2027-03-03", "os": "Amazon Linux 2"},
+      "python3.10": {"deprecated": "2026-10-31", "block_create": "2027-02-01", "block_update": "2027-03-03", "os": "Amazon Linux 2"},
+      "python3.11": {"deprecated": "2027-06-30", "block_create": "2027-07-31", "block_update": "2027-08-31", "os": "Amazon Linux 2"},
+      "nodejs16.x": {"deprecated": "2024-06-12", "block_create": "2027-02-01", "block_update": "2027-03-03", "os": "Amazon Linux 2"},
+      "nodejs18.x": {"deprecated": "2025-09-01", "block_create": "2027-02-01", "block_update": "2027-03-03", "os": "Amazon Linux 2"},
+      "nodejs20.x": {"deprecated": "2026-04-30", "block_create": "2027-02-01", "block_update": "2027-03-03", "os": "Amazon Linux 2023"},
+      "nodejs22.x": {"deprecated": "2027-04-30", "block_create": "2027-06-01", "block_update": "2027-07-01", "os": "Amazon Linux 2023"},
+      "ruby3.2": {"deprecated": "2026-03-31", "block_create": "2027-02-01", "block_update": "2027-03-03", "os": "Amazon Linux 2"},
+      "ruby3.3": {"deprecated": "2027-03-31", "block_create": "2027-04-30", "block_update": "2027-05-31", "os": "Amazon Linux 2023"},
+      "dotnet6": {"deprecated": "2024-12-20", "block_create": "2027-02-01", "block_update": "2027-03-03", "os": "Amazon Linux 2"},
+      "dotnet8": {"deprecated": "2026-11-10", "block_create": "2027-02-01", "block_update": "2027-03-03", "os": "Amazon Linux 2023"},
+      "java8.al2": {"deprecated": "2027-06-30", "block_create": "2027-07-31", "block_update": "2027-08-31", "os": "Amazon Linux 2"},
+      "java11": {"deprecated": "2027-06-30", "block_create": "2027-07-31", "block_update": "2027-08-31", "os": "Amazon Linux 2"},
+      "java17": {"deprecated": "2027-06-30", "block_create": "2027-07-31", "block_update": "2027-08-31", "os": "Amazon Linux 2"},
+      "provided.al2": {"deprecated": "2026-07-31", "block_create": "2027-02-01", "block_update": "2027-03-03", "os": "Amazon Linux 2"}
+    },
+    "supported": [
+      "nodejs22.x", "nodejs24.x", "nodejs26.x",
+      "python3.11", "python3.12", "python3.13", "python3.14", "python3.15",
+      "java17.al2023", "java11.al2023", "java8.al2023", "java21", "java25",
+      "dotnet8", "dotnet10",
+      "ruby3.3", "ruby3.4", "ruby4.0",
+      "provided.al2023"
+    ],
+    "supported_note": "Runtime identifiers Lambda still accepts, read from the supported-runtimes table on the date above. A migration target is only offered if it appears here, so the tool never proposes a runtime AWS would reject."
+  }
 }

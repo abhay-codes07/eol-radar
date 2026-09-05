@@ -70,6 +70,9 @@ Five things in a repo carry a death date. EOL Radar reads all five:
 | **cloud** | Serverless, SAM/CloudFormation, Terraform, CDK, App Engine, Vercel, Netlify | a Lambda runtime that stops accepting updates, a Node version your host is about to disable |
 | **packages** | npm, PyPI, Cargo, Go, RubyGems, Composer manifests and lockfiles | publisher-deprecated versions, archived upstreams, frameworks on a dead major |
 
+Then it answers the three questions a report alone leaves open: which exact
+version to move to, how to make that change everywhere at once, and who owns it.
+
 ## Install
 
 Nothing to install. Python 3.8 or newer, standard library only. `git` is needed
@@ -98,6 +101,8 @@ python scripts/eol_radar.py [options]
   --baseline FILE      previous --output json result, to show what changed
   --fail-on WHAT       none | dying | dead   exit 2 when matched (none)
   --output VIEW        human | summary | json | patch (human)
+  --migrate P[=TARGET] move off a runtime in every place it is declared, as one
+                       coordinated diff plus a checklist (e.g. --migrate python)
   --depth N            directory depth to search (8)
   --today YYYY-MM-DD   evaluate against a fixed date (for tests)
   --keep-work          keep the intermediate step files and print their path
@@ -160,8 +165,60 @@ python scripts/eol_radar.py            # the same findings are now gone
 +      - uses: actions/setup-node@v5
 ```
 
-Runtime pins, base images and dependencies are reported but never rewritten.
-Those need a human decision, so putting them in a patch would be dishonest.
+Runtime pins, base images and dependencies are reported but never rewritten by
+`--output patch`. Moving a runtime is a decision, so it has its own command.
+
+### Move off a runtime everywhere at once
+
+Bumping one file is easy and useless. A Python version is pinned in the
+Dockerfile, the CI matrix, `requires-python`, `.python-version` and the Lambda
+runtime identifier, and the build only goes green when they all agree.
+`--migrate` plans that as one coordinated change.
+
+```bash
+python scripts/eol_radar.py --migrate python          # target defaults to the current release
+python scripts/eol_radar.py --migrate python=3.13     # or name it
+```
+
+```
+# eol-radar migration: python -> 3.13
+# 5 edit(s) across 5 file(s)
+# owners: @acme/build, @acme/devex, @acme/platform, @acme/runtime
+#   .github/workflows/ci.yml:20  3.9 -> 3.13
+#   .python-version:1            3.9.18 -> 3.13
+#   Dockerfile:8                 3.9 -> 3.13
+#   pyproject.toml:4             3.9 -> 3.13
+#   serverless.yml:5             python3.9 -> python3.13
+# not edited:
+#   Dockerfile:3  the version comes from a variable on another line; change that definition instead
+# after applying:
+#   - Regenerate the lockfile: poetry lock, uv lock, or pip-compile.
+#   - Re-run the test suite on the new interpreter before merging.
+```
+
+Three things make this safe to trust. A managed runtime is migrated with its
+language, so the Lambda identifier moves when Python moves. A Lambda target is
+only offered if AWS still accepts it. And a version that comes from a variable
+is refused with the reason rather than half-rewritten.
+
+### Who owns the work, and when it lands
+
+If the repository has a CODEOWNERS file, every finding is attributed using
+GitHub's own rule that the last matching pattern wins, and the report ends with
+the work grouped by quarter.
+
+```
+EXPOSURE BY QUARTER — when the work lands
+------------------------------------------------------------------------------
+  2026-Q3    1 dead, 3 dying
+      owners: @acme/devex (3), ci-oncall@acme.example (3), @acme/build (1)
+  2027-Q1    3 watch
+      owners: @acme/runtime (3)
+  owners read from .github/CODEOWNERS
+```
+
+`--output json` additionally carries `work_by_owner`, ordered by the soonest
+deadline each owner is facing.
 
 Watch what changes, which is the point of running it more than once:
 
@@ -210,12 +267,24 @@ Every source is public and keyless.
 | raw.githubusercontent.com | an action's `action.yml` at the exact ref, for `runs.using` |
 | api.github.com | whether the upstream repository is archived |
 
-Plus one small [curated table](data/enforcement.json) of platform cut-offs that
-no feed models, because they belong to a platform rather than to a release line:
-the GitHub Actions Node 20 removal, Vercel disabling Node 20, the Lambda
-`python3.9` create block, and Dependabot dropping Python 3.9. Each rule carries
-the primary source it was read from and the date it was verified. Everything
-that can come from a live feed does.
+### The enforcement calendar
+
+Public feeds model release lines well and platform policy badly. endoflife.date
+knows when Python 3.9 stopped being maintained. It does not know that GitHub
+removes Node 20 from its runners on 23 September, that Vercel disables Node 20
+on 1 October, or that AWS blocks new `python3.9` functions before it blocks
+updates to existing ones. Those dates live in scattered vendor changelogs and
+they are the ones that break a build.
+
+[`data/enforcement.json`](data/enforcement.json) is that missing calendar. Every
+entry names the primary source it was read from and the date that source was
+last checked, because these dates move: AWS has repeatedly pushed its Lambda
+block dates later, and a stale second-hand copy is worse than none. Anything a
+live feed can answer is deliberately not duplicated there.
+
+The Lambda table is the clearest case. endoflife.date publishes the deprecation
+date and the block-update date. It does not publish block-create, which lands
+first, so that is the one the calendar adds.
 
 `GITHUB_TOKEN` is optional and never required. Without it the archived-upstream
 check runs inside the anonymous 60-requests-per-hour budget and says so in the
@@ -242,10 +311,10 @@ report down with it.
 
 ```
 scan_runtimes ─┐
-scan_containers┤
-scan_ci        ├─> resolve ─> join ─> human | summary | json | patch
-scan_cloud     ┤
-scan_packages ─┘
+scan_containers┤                       ┌─> human | summary | json
+scan_ci        ├─> resolve ─> join ────┼─> patch      (mechanical fixes)
+scan_cloud     ┤                  │    └─> migrate    (one runtime, every site)
+scan_packages ─┘                  └─ ownership: who owns it, by quarter
 
 --user: the whole pipeline per repository ─> aggregate ─> account view
 ```
@@ -266,7 +335,7 @@ python scripts/scan_ci.py --root . | python -m json.tool
 python -m unittest discover -s tests -v
 ```
 
-55 tests, no network, fixed clock. The verdict engine is tested against a stub
+78 tests, no network, fixed clock. The verdict engine is tested against a stub
 fact set so the expected output does not change when endoflife.date publishes a
 new release. Verified on Python 3.10 (Windows) and 3.12 (Linux).
 
