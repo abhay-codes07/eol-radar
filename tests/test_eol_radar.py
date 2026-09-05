@@ -836,6 +836,91 @@ class TestPrecisionFromRealRepositories(unittest.TestCase):
             shutil.rmtree(workspace, ignore_errors=True)
 
 
+class TestCircuitBreaker(unittest.TestCase):
+    """A dead host must not cost a timeout per URL for the rest of the run."""
+
+    def _http(self, opener):
+        import resolve
+        http = resolve.Http(use_cache=False, breaker_threshold=3)
+        http.backoff = 0
+        http.opener = opener
+        return http
+
+    def test_repeated_network_failures_open_the_breaker(self):
+        from urllib import error as urlerror
+        calls = []
+
+        def dead(request, timeout=None):
+            calls.append(request.full_url)
+            raise urlerror.URLError("timed out")
+
+        http = self._http(dead)
+        for _ in range(3):
+            body, error = http.get("https://api.example.test/a")
+            self.assertIsNone(body)
+            self.assertIn("unreachable", error)
+        before = len(calls)
+        body, error = http.get("https://api.example.test/b")
+        self.assertEqual(len(calls), before)                  # no network call at all
+        self.assertIn("not retried after repeated failures", error)
+        self.assertEqual(http.stats["skipped"], 1)
+
+    def test_a_failure_on_one_host_does_not_silence_another(self):
+        from urllib import error as urlerror
+
+        def dead(request, timeout=None):
+            raise urlerror.URLError("timed out")
+
+        http = self._http(dead)
+        for _ in range(3):
+            http.get("https://one.example.test/x")
+        self.assertEqual(http.host_failures.get("one.example.test"), 3)
+        self.assertEqual(http.host_failures.get("two.example.test", 0), 0)
+
+    def test_an_http_error_proves_the_host_is_up_and_resets_the_count(self):
+        from urllib import error as urlerror
+        state = {"n": 0}
+
+        def flaky(request, timeout=None):
+            state["n"] += 1
+            if state["n"] <= 2:
+                raise urlerror.URLError("timed out")
+            raise urlerror.HTTPError(request.full_url, 404, "nf", {}, None)
+
+        http = self._http(flaky)
+        http.get("https://h.example.test/x")                  # one retry, then counted
+        self.assertEqual(http.host_failures.get("h.example.test"), 1)
+        body, error = http.get("https://h.example.test/y")    # answers 404
+        self.assertEqual(error, "http 404")
+        self.assertEqual(http.host_failures.get("h.example.test"), 0)
+
+    def test_a_transient_status_is_retried_and_never_cached(self):
+        from urllib import error as urlerror
+        state = {"n": 0}
+
+        class Response(object):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return b'{"ok": true}'
+
+        def throttled_then_ok(request, timeout=None):
+            state["n"] += 1
+            if state["n"] == 1:
+                raise urlerror.HTTPError(request.full_url, 429, "slow down", {}, None)
+            return Response()
+
+        http = self._http(throttled_then_ok)
+        body, error = http.get("https://api.example.test/z")
+        self.assertIsNone(error)
+        self.assertEqual(body, {"ok": True})
+        self.assertEqual(state["n"], 2)
+
+
 class TestDiff(unittest.TestCase):
     def test_line_shift_is_not_a_new_finding(self):
         before = {"kind": "action", "what": "actions/checkout@v4", "where": "wf.yml:24", "status": "DYING"}
@@ -958,6 +1043,26 @@ class TestProcessContract(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["subjects"], [])
         self.assertIn("no deployment manifests", payload["warning"])
+
+    def test_join_names_the_report_after_the_scanned_directory(self):
+        # A Play step cannot pass a basename, so join must derive it itself.
+        workspace = tempfile.mkdtemp()
+        try:
+            surface = os.path.join(workspace, "s.json")
+            facts = os.path.join(workspace, "f.json")
+            with open(surface, "w", encoding="utf-8") as handle:
+                json.dump({"surface": "ci", "subjects": [], "warning": "none", "files_scanned": 0}, handle)
+            with open(facts, "w", encoding="utf-8") as handle:
+                json.dump({"facts": {}, "ledger": []}, handle)
+            result = subprocess.run(
+                [sys.executable, os.path.join(SCRIPTS, "join.py"), surface, "--facts", facts,
+                 "--root", SAMPLE, "--today", "2026-09-06", "--output", "summary"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("repo=sample-repo", result.stdout)
+        finally:
+            import shutil
+            shutil.rmtree(workspace, ignore_errors=True)
 
     def test_bad_package_cap_is_rejected(self):
         result = self._run("scan_packages.py", ["--root", SAMPLE, "--max", "0"])

@@ -76,7 +76,7 @@ version to move to, how to make that change everywhere at once, and who owns it.
 ## Install
 
 Nothing to install. Python 3.8 or newer, standard library only. `git` is needed
-only for `--repo`.
+for `--repo` and `--user`.
 
 ```bash
 git clone https://github.com/abhay-codes07/eol-radar.git
@@ -305,7 +305,10 @@ LEDGER
 
 A surface that finds nothing is `skipped`, not an error. A source that fails is
 `degraded` and its rows come back `UNKNOWN`. One unreachable API never takes the
-report down with it.
+report down with it, and it never takes long to say so either: a host that fails
+three times in a row at the network level is not asked again for the rest of the
+run, so a machine with no connectivity gets its report in seconds rather than
+waiting out a timeout per URL.
 
 ## How it is put together
 
@@ -335,7 +338,7 @@ python scripts/scan_ci.py --root . | python -m json.tool
 python -m unittest discover -s tests -v
 ```
 
-91 tests, no network, fixed clock. The verdict engine is tested against a stub
+95 tests, no network, fixed clock. The verdict engine is tested against a stub
 fact set so the expected output does not change when endoflife.date publishes a
 new release. Verified on Python 3.10 (Windows) and 3.12 (Linux).
 

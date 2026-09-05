@@ -26,8 +26,24 @@ MAX_FILE_BYTES = 8 * 1024 * 1024
 
 
 def emit(payload):
-    """Write the step result as one canonical JSON line."""
-    sys.stdout.write(json.dumps(payload, sort_keys=True) + "\n")
+    """Write the step result as one canonical JSON line.
+
+    If the step was given --out PATH, the same JSON is also written there. A
+    Play step is a bare exec with no shell, so it cannot redirect stdout, and
+    the next step needs a file to read.
+    """
+    text = json.dumps(payload, sort_keys=True) + "\n"
+    sys.stdout.write(text)
+    target = arg_value(sys.argv[1:], "--out")
+    if target:
+        directory = os.path.dirname(os.path.abspath(target))
+        try:
+            if directory and not os.path.isdir(directory):
+                os.makedirs(directory)
+            with open(target, "w", encoding="utf-8") as handle:
+                handle.write(text)
+        except OSError as error:
+            fail("could not write " + target + ": " + str(error))
 
 
 def fail(message, code=1):

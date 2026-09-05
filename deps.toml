@@ -14,13 +14,12 @@ package = "python@3.13"
 manager = "apt"
 package = "python3"
 
-# Needed only for the `repo` parameter, which shallow-clones a public
-# repository. Every other path works without it, so the step degrades rather
-# than failing when git is absent.
+# The Play's first step fetches the scanner itself with a shallow clone at a
+# pinned tag, so git is required. The tool's own --repo mode uses it too.
 [[tools]]
 id = "git"
 command = "git"
-required = false
+required = true
 
 [[tools.install]]
 manager = "brew"

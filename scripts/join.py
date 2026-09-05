@@ -566,7 +566,7 @@ def render_human(report):
     lines.append("-" * 78)
     for row in report["ledger"]:
         detail = row.get("note") or ""
-        lines.append("  " + row["status"].ljust(11) + row["source"].ljust(28) + detail)
+        lines.append("  " + row["status"].ljust(12) + row["source"].ljust(28) + detail)
     lines.append("")
     lines.append("Lifecycle dates from endoflife.date; package status from deps.dev and npm;")
     lines.append("action runtimes read from each action.yml at the pinned ref.")
@@ -707,7 +707,7 @@ def build_diff(findings, baseline_path):
 
 
 VALUE_FLAGS = {"--facts", "--today", "--horizon", "--repo-name", "--fail-on",
-               "--enforcement", "--baseline", "--output", "--root", "--migrate"}
+               "--enforcement", "--baseline", "--output", "--root", "--migrate", "--out"}
 
 
 def main(argv):
@@ -727,7 +727,12 @@ def main(argv):
     if horizon < 1 or horizon > 3650:
         c.fail("--horizon must be between 1 and 3650 days")
 
-    repo_name = c.arg_value(argv, "--repo-name", "(unnamed)")
+    # A Play step cannot compute a basename, so when no name is given the
+    # scanned directory's own name is used rather than "(unnamed)".
+    repo_name = c.arg_value(argv, "--repo-name")
+    if not repo_name:
+        root_arg = c.arg_value(argv, "--root", ".")
+        repo_name = os.path.basename(os.path.abspath(root_arg)) or "(unnamed)"
     fail_on = (c.arg_value(argv, "--fail-on", "none") or "none").lower()
     if fail_on not in ("none", "dying", "dead"):
         c.fail("--fail-on must be none, dying or dead")
