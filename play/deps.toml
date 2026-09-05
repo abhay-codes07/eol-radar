@@ -1,3 +1,5 @@
+schema_version = 1
+
 # Tools the Play's steps actually invoke. Nothing else is declared: a phantom
 # dependency is a barrier to somebody running this for the first time.
 
@@ -5,26 +7,9 @@
 id = "python3"
 command = "python3"
 required = true
+version_requirement = ">=3.8"
 
-[[tools.install]]
-manager = "brew"
-package = "python@3.13"
-
-[[tools.install]]
-manager = "apt"
-package = "python3"
-
-# The Play's first step fetches the scanner itself with a shallow clone at a
-# pinned tag, so git is required. The tool's own --repo mode uses it too.
 [[tools]]
 id = "git"
 command = "git"
 required = true
-
-[[tools.install]]
-manager = "brew"
-package = "git"
-
-[[tools.install]]
-manager = "apt"
-package = "git"

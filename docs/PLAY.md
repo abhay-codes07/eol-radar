@@ -58,6 +58,25 @@ fetch_tool ─┬─> scan_runtimes ──┐
             └─> scan_packages ──┘
 ```
 
+## The finished Play is in this repository
+
+`play/main.ts` and `play/deps.toml` are the Play exactly as published: the
+frontmatter with ten steps in six layers, parameter defaults, timeouts, and a
+presentation that renders the report. Sections 3 and 4 describe how it was
+produced, and what had to be corrected by hand afterwards, because the exported
+draft was an honest recording but not yet a correct Play:
+
+- every step came out as a root with no edges, so `depends_on` was added;
+- `90` stayed a literal, so `horizon_days` was wired in;
+- a plain `git clone` refused to run a second time in the same workspace, so
+  fetching became `git init`, `git fetch <tag>`, `git checkout FETCH_HEAD`,
+  which is idempotent by construction;
+- the generated presentation printed "Rendered 8 step(s)", so it was rewritten
+  to render the report.
+
+To install it locally without re-capturing: copy both files into the package
+directory `rote play info eol-radar` reports, then lint.
+
 ## 3. Capture
 
 Start the journey viewer first so the exploration is on record:
@@ -71,13 +90,17 @@ repository (one of the ones from the sweep, not the fixture). One reading is one
 step: that is what lets the five scanners become five parallel root steps.
 
 ```bash
-rote init eol-radar --seq
+rote init eol-radar --seq --force
+cd "$HOME/.rote/workspaces/eol-radar"          # proc run only works from inside the workspace
 # Two real targets are already staged in WSL. starter-workflows is GitHub's own
 # template repository and carries eight node20 actions, which makes the capture
 # tell its own story; assay is one of yours.
 export TARGET=/home/abhay/eol-targets/starter-workflows
+rote workspace set root=$TARGET horizon_days=90 max_packages=300 fail_on=none   # these become the parameters
 
-rote proc run git clone --depth 1 --branch v0.1.0 https://github.com/abhay-codes07/eol-radar.git eol-radar-tool
+rote proc run git init -q eol-radar-tool
+rote proc run git -C eol-radar-tool fetch -q --depth 1 https://github.com/abhay-codes07/eol-radar.git v0.1.1
+rote proc run git -C eol-radar-tool checkout -q --force FETCH_HEAD
 
 rote proc run python3 eol-radar-tool/scripts/scan_runtimes.py   --root $TARGET --out work/runtimes.json
 rote proc run python3 eol-radar-tool/scripts/scan_containers.py --root $TARGET --out work/containers.json
@@ -111,13 +134,16 @@ the insight the whole tool rests on, and a spotless run reads as a demo.
 ## 4. Crystallise
 
 ```bash
-rote workspace export eol-radar --params root,horizon_days,max_packages,baseline,fail_on
-rote play run https://play.modiqo.ai/modiqo/play-dag play=./main.ts
-rote play lint main.ts
+rote workspace export main.ts --params root,horizon_days,max_packages,fail_on -d "..."
+rote play info eol-radar                      # prints the package directory it landed in
+rote play run https://play.modiqo.ai/modiqo/play-dag play=<that directory>/main.ts --yes
+rote play lint eol-radar
 ```
 
-The DAG check should show 8 steps and 4 layers. `1 step · 1 layer` means the
-capture collapsed and should be redone.
+The DAG check should show 10 steps and 6 layers. `8 steps · 1 layers` with
+"(no edges)" is what the raw export produces; that is the moment to replace it
+with `play/main.ts` from this repository, or add the `depends_on` edges by hand.
+`deps.toml` needs `schema_version = 1` at the top for this rote version.
 
 Rules that bite: quote non-string defaults (`'90'`, not `90`); a value-edge jq
 must resolve to a scalar; no literal `*/` in the frontmatter; every step gets a
@@ -127,15 +153,17 @@ already declares exactly `python3` and `git`.
 
 ## 5. Test the negative space
 
+A local play takes named parameters and no `--yes`; that flag is for registry
+plays only.
+
 ```bash
-rote play run main.ts root=$TARGET                                # happy path
-rote play run main.ts root=/tmp/empty-dir                         # nothing found, exit 0
-rote play run main.ts root=/nonexistent                           # hard fault, clear message
-rote play run main.ts root=$TARGET horizon_days=abc               # rejected input
-rote play run main.ts root=$TARGET fail_on=dead                   # exit 2 if anything is dead
-rote play run main.ts root=$TARGET --output=summary               # one line, same facts
-rote play run main.ts root=$TARGET --output=json > base.json
-rote play run main.ts root=$TARGET baseline=base.json             # since-last-run section
+rote play run eol-radar root=$TARGET                              # happy path, twice: it must be re-runnable
+rote play run eol-radar root=/tmp/empty-dir                       # nothing found, exit 0
+rote play run eol-radar root=/nonexistent                         # hard fault, clear message
+rote play run eol-radar root=$TARGET horizon_days=abc             # rejected input
+rote play run eol-radar root=$TARGET fail_on=dead                 # the run fails and says why
+rote play run eol-radar root=$TARGET --output=summary             # one line, same facts
+rote play run eol-radar root=$TARGET --output=json                # the whole report under .report
 ```
 
 The offline suite covers the same ground without rote:

@@ -28,6 +28,7 @@
  *     default: 'none'
  *     description: 'none, dying or dead. The run fails when a finding of that severity exists, for use as a CI gate.'
  * metadata:
+ *   version: 0.1.1
  *   rote_version: "0.80.0"
  *   status: draft
  *   kind: atomic
@@ -39,22 +40,44 @@
  *     suspicion_count: 3
  *     audit_sha256: 285720fc60556e694529acb26547eff80dc5702931b0e37e2fb0d97f3b6032a5
  * steps:
- *   fetch_tool:
+ *   tool_init:
  *     type: process.exec
- *     timeout_ms: 120000
+ *     timeout_ms: 30000
  *     argv:
  *     - git
- *     - clone
+ *     - init
+ *     - -q
+ *     - eol-radar-tool
+ *   tool_fetch:
+ *     type: process.exec
+ *     timeout_ms: 120000
+ *     depends_on: [tool_init]
+ *     argv:
+ *     - git
+ *     - -C
+ *     - eol-radar-tool
+ *     - fetch
+ *     - -q
  *     - --depth
  *     - '1'
- *     - --branch
- *     - v0.1.1
  *     - https://github.com/abhay-codes07/eol-radar.git
+ *     - v0.1.1
+ *   tool_checkout:
+ *     type: process.exec
+ *     timeout_ms: 30000
+ *     depends_on: [tool_fetch]
+ *     argv:
+ *     - git
+ *     - -C
  *     - eol-radar-tool
+ *     - checkout
+ *     - -q
+ *     - --force
+ *     - FETCH_HEAD
  *   scan_runtimes:
  *     type: process.exec
  *     timeout_ms: 60000
- *     depends_on: [fetch_tool]
+ *     depends_on: [tool_checkout]
  *     argv:
  *     - python3
  *     - eol-radar-tool/scripts/scan_runtimes.py
@@ -65,7 +88,7 @@
  *   scan_containers:
  *     type: process.exec
  *     timeout_ms: 60000
- *     depends_on: [fetch_tool]
+ *     depends_on: [tool_checkout]
  *     argv:
  *     - python3
  *     - eol-radar-tool/scripts/scan_containers.py
@@ -76,7 +99,7 @@
  *   scan_ci:
  *     type: process.exec
  *     timeout_ms: 60000
- *     depends_on: [fetch_tool]
+ *     depends_on: [tool_checkout]
  *     argv:
  *     - python3
  *     - eol-radar-tool/scripts/scan_ci.py
@@ -87,7 +110,7 @@
  *   scan_cloud:
  *     type: process.exec
  *     timeout_ms: 60000
- *     depends_on: [fetch_tool]
+ *     depends_on: [tool_checkout]
  *     argv:
  *     - python3
  *     - eol-radar-tool/scripts/scan_cloud.py
@@ -98,7 +121,7 @@
  *   scan_packages:
  *     type: process.exec
  *     timeout_ms: 120000
- *     depends_on: [fetch_tool]
+ *     depends_on: [tool_checkout]
  *     argv:
  *     - python3
  *     - eol-radar-tool/scripts/scan_packages.py
@@ -181,7 +204,9 @@ function view(step: ReturnType<typeof ctx.step>): StepView {
 
 // Every stepName("...") stays a literal so lint can check it against steps:.
 const steps: Record<string, StepView> = {};
-steps["fetch_tool"] = view(ctx.step(stepName("fetch_tool")));
+steps["tool_init"] = view(ctx.step(stepName("tool_init")));
+steps["tool_fetch"] = view(ctx.step(stepName("tool_fetch")));
+steps["tool_checkout"] = view(ctx.step(stepName("tool_checkout")));
 steps["scan_runtimes"] = view(ctx.step(stepName("scan_runtimes")));
 steps["scan_containers"] = view(ctx.step(stepName("scan_containers")));
 steps["scan_ci"] = view(ctx.step(stepName("scan_ci")));
