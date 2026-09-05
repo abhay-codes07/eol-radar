@@ -921,6 +921,79 @@ class TestCircuitBreaker(unittest.TestCase):
         self.assertEqual(state["n"], 2)
 
 
+class TestPlayView(unittest.TestCase):
+    """A Play step's stdout is previewed with a cap; the view must fit it."""
+
+    def _report(self, n_bad, n_ok):
+        findings = []
+        for i in range(n_bad):
+            findings.append({"status": "DEAD" if i % 2 else "DYING", "kind": "action",
+                             "what": "some/action-%d@v4" % i, "where": "wf%d.yml:%d" % (i, i),
+                             "date": "2026-09-23", "days": 17, "because": "GitHub Actions runners remove Node 20 on 2026-09-23",
+                             "move_to": "upgrade to some/action-%d@v5 (runs on node24)" % i,
+                             "notes": ["read from https://raw.githubusercontent.com/x/y/v4/action.yml",
+                                       "An action whose action.yml declares runs.using: node20 will not start " * 3,
+                                       "third note"], "sources": ["https://example.test"] * 3, "owners": ["@team"]})
+        for i in range(n_ok):
+            findings.append({"status": "OK", "kind": "package", "what": "pkg-%d@1.0.0" % i,
+                             "where": "package-lock.json", "date": None, "days": None,
+                             "because": "published and not deprecated", "move_to": None, "notes": [], "sources": []})
+        counts = {"DEAD": n_bad // 2, "DYING": n_bad - n_bad // 2, "WATCH": 0, "UNKNOWN": 0, "OK": n_ok}
+        return {"tool": "eol-radar", "schema": 1, "generated_at": "2026-09-06", "repo": "big",
+                "horizon_days": 90, "counts": counts, "distinct": dict(counts), "findings": findings,
+                "ledger": [{"source": "scan: ci", "status": "ok", "note": "x"}], "ownership": {"source": None},
+                "exposure_by_quarter": [], "work_by_owner": [], "enforcement_verified": "2026-09-05"}
+
+    def test_fits_the_budget_and_declares_what_it_dropped(self):
+        report = self._report(400, 900)
+        encoded = join.render_play(report, 24000)
+        self.assertLessEqual(len(encoded.encode("utf-8")), 24000)
+        view = json.loads(encoded)
+        self.assertEqual(view["view"], "play")
+        self.assertEqual(view["ok_hidden"], 900)
+        self.assertEqual(view["findings_total"], 1300)
+        self.assertGreater(view["findings_omitted"], 0)
+        self.assertEqual(len(view["findings"]) + view["findings_omitted"], 400)
+        self.assertTrue(all(f["status"] != "OK" for f in view["findings"]))
+        self.assertIn("EOL Radar:", view["summary"])
+
+    def test_a_small_report_is_kept_whole(self):
+        report = self._report(6, 20)
+        view = json.loads(join.render_play(report, 24000))
+        self.assertEqual(view["findings_omitted"], 0)
+        self.assertEqual(len(view["findings"]), 6)
+        self.assertEqual(len(view["findings"][0]["notes"]), 2)     # notes capped, sources dropped
+        self.assertNotIn("sources", view["findings"][0])
+
+    def test_out_writes_the_complete_report_beside_the_bounded_view(self):
+        workspace = tempfile.mkdtemp()
+        try:
+            surface = os.path.join(workspace, "s.json")
+            facts = os.path.join(workspace, "f.json")
+            full = os.path.join(workspace, "work", "report.json")
+            dead = c.subject("runtime", "python 3.9", ".python-version:1", "3.9",
+                             c.eol_lookup("python", "3.9"))
+            with open(surface, "w", encoding="utf-8") as handle:
+                json.dump({"surface": "runtimes", "subjects": [dead], "warning": None, "files_scanned": 1}, handle)
+            with open(facts, "w", encoding="utf-8") as handle:
+                json.dump({"facts": {"eol:python": STUB_FACTS["eol:python"]}, "ledger": []}, handle)
+            result = subprocess.run(
+                [sys.executable, os.path.join(SCRIPTS, "join.py"), surface, "--facts", facts,
+                 "--root", SAMPLE, "--today", "2026-09-06", "--output", "play", "--out", full],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            view = json.loads(result.stdout)
+            self.assertEqual(view["full_report"], full)
+            self.assertTrue(os.path.isfile(full))
+            with open(full, encoding="utf-8") as handle:
+                complete = json.load(handle)
+            self.assertEqual(complete["findings"][0]["what"], "python 3.9")
+            self.assertIn("sources", complete["findings"][0])          # the full report keeps everything
+        finally:
+            import shutil
+            shutil.rmtree(workspace, ignore_errors=True)
+
+
 class TestDiff(unittest.TestCase):
     def test_line_shift_is_not_a_new_finding(self):
         before = {"kind": "action", "what": "actions/checkout@v4", "where": "wf.yml:24", "status": "DYING"}

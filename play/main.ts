@@ -61,7 +61,7 @@
  *     - --depth
  *     - '1'
  *     - https://github.com/abhay-codes07/eol-radar.git
- *     - v0.1.1
+ *     - v0.1.2
  *   tool_checkout:
  *     type: process.exec
  *     timeout_ms: 30000
@@ -166,7 +166,9 @@
  *     - --fail-on
  *     - $fail_on
  *     - --output
- *     - json
+ *     - play
+ *     - --out
+ *     - work/report.json
  * ---
  */
 
@@ -233,11 +235,15 @@ type Finding = {
   status: string; what: string; where: string; date: string | null; days: number | null;
   because: string | null; move_to: string | null; owners?: string[];
 };
+// join emits its bounded "play" view: every finding that is not OK, trimmed
+// from the end to fit rote's stdout preview, with what was dropped declared
+// and the complete report written to work/report.json in the run workspace.
 type Report = {
   repo: string; generated_at: string; horizon_days: number;
   counts: Record<string, number>; distinct?: Record<string, number>;
   findings: Finding[]; ledger: { source: string; status: string; note?: string }[];
   ownership?: { source?: string | null };
+  summary?: string; ok_hidden?: number; findings_omitted?: number; full_report?: string | null;
 };
 
 let report: Report | null = null;
@@ -337,6 +343,11 @@ if (report) {
     humanLines.push(`  ${hidden} further distinct finding(s) not shown here; every one is in --output=json.`);
     humanLines.push("");
   }
+  if ((r.findings_omitted ?? 0) > 0) {
+    humanLines.push(`  ${r.findings_omitted} lower-severity finding(s) were left out of this view to fit; ` +
+      `the complete report is at ${r.full_report ?? "work/report.json"} in the run workspace.`);
+    humanLines.push("");
+  }
   humanLines.push("LEDGER");
   humanLines.push("-".repeat(78));
   for (const row of r.ledger) {
@@ -345,16 +356,18 @@ if (report) {
   humanLines.push("");
   humanLines.push("Lifecycle dates from endoflife.date; package status from deps.dev and npm;");
   humanLines.push("action runtimes read from each action.yml at the pinned ref.");
-  if ((r.counts["OK"] ?? 0) > 0) {
-    humanLines.push(`${r.counts["OK"]} supported item(s) not listed above; all of them are in --output=json.`);
+  const okHidden = r.ok_hidden ?? r.counts["OK"] ?? 0;
+  if (okHidden > 0) {
+    humanLines.push(`${okHidden} supported item(s) not listed above; all of them are in ${r.full_report ?? "the full report"}.`);
   }
 
   const soonest = r.findings.find((f) => (f.status === "DEAD" || f.status === "DYING") && f.date);
-  summaryLine = `EOL Radar: ${countPhrase(r, "DEAD")} | ${countPhrase(r, "DYING")} <=${r.horizon_days}d | ` +
+  summaryLine = r.summary ??
+    (`EOL Radar: ${countPhrase(r, "DEAD")} | ${countPhrase(r, "DYING")} <=${r.horizon_days}d | ` +
     `${countPhrase(r, "WATCH")} | ${r.counts["OK"] ?? 0} ok` +
     ((r.counts["UNKNOWN"] ?? 0) > 0 ? ` | ${r.counts["UNKNOWN"]} unknown` : "") +
     ` | repo=${r.repo} | ${r.generated_at}` +
-    (soonest ? ` | next: ${soonest.what} ${soonest.date}` : "");
+    (soonest ? ` | next: ${soonest.what} ${soonest.date}` : ""));
 
   resultBody = {
     run_id: ctx.run.run_id,

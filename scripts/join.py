@@ -657,6 +657,59 @@ def _count_phrase(report, status, label):
     return "%d %s" % (total, label)
 
 
+def render_play(report, budget):
+    """A bounded JSON view for a Play step, whose stdout preview has a cap.
+
+    rote keeps only a preview of a step's stdout for the presentation; a full
+    report from a large repository overruns it and cannot be parsed. This view
+    keeps every finding that is not OK, in severity order, and drops from the
+    end until the encoded size fits the budget. What was dropped is declared,
+    and the complete report is written next to it when --out is given, so
+    nothing is lost, only moved.
+    """
+    shown = [f for f in report["findings"] if f["status"] != "OK"]
+    base = {
+        "tool": report["tool"],
+        "schema": report["schema"],
+        "view": "play",
+        "generated_at": report["generated_at"],
+        "repo": report["repo"],
+        "horizon_days": report["horizon_days"],
+        "summary": render_summary(report),
+        "counts": report["counts"],
+        "distinct": report["distinct"],
+        "ok_hidden": report["counts"].get("OK", 0),
+        "findings_total": len(report["findings"]),
+        "ledger": report["ledger"],
+        "ownership": report.get("ownership"),
+        "exposure_by_quarter": report.get("exposure_by_quarter"),
+        "work_by_owner": report.get("work_by_owner"),
+        "enforcement_verified": report.get("enforcement_verified"),
+        "full_report": report.get("full_report"),
+    }
+
+    def slim(finding):
+        keep = {}
+        for key in ("status", "kind", "what", "where", "date", "days", "because",
+                    "move_to", "upgrade_to", "owners", "cycle", "product"):
+            if finding.get(key) not in (None, [], ""):
+                keep[key] = finding[key]
+        notes = [n for n in (finding.get("notes") or []) if n][:2]
+        if notes:
+            keep["notes"] = notes
+        return keep
+
+    keep = len(shown)
+    while True:
+        view = dict(base)
+        view["findings"] = [slim(f) for f in shown[:keep]]
+        view["findings_omitted"] = len(shown) - keep
+        encoded = json.dumps(view, sort_keys=True, separators=(",", ":"))
+        if len(encoded.encode("utf-8")) <= budget or keep == 0:
+            return encoded
+        keep = max(0, keep - max(1, keep // 5))
+
+
 def render_summary(report):
     counts = report["counts"]
     parts = [_count_phrase(report, "DEAD", "dead"),
@@ -707,7 +760,8 @@ def build_diff(findings, baseline_path):
 
 
 VALUE_FLAGS = {"--facts", "--today", "--horizon", "--repo-name", "--fail-on",
-               "--enforcement", "--baseline", "--output", "--root", "--migrate", "--out"}
+               "--enforcement", "--baseline", "--output", "--root", "--migrate", "--out",
+               "--budget"}
 
 
 def main(argv):
@@ -833,9 +887,29 @@ def main(argv):
             sys.exit(3)
         return
 
+    # --out writes the complete report to disk regardless of the view printed.
+    out_path = c.arg_value(argv, "--out")
+    if out_path:
+        report["full_report"] = out_path
+        try:
+            directory = os.path.dirname(os.path.abspath(out_path))
+            if directory:
+                os.makedirs(directory, exist_ok=True)
+            with open(out_path, "w", encoding="utf-8") as handle:
+                handle.write(json.dumps(report, indent=2, sort_keys=True) + "\n")
+        except OSError as error:
+            c.fail("could not write " + out_path + ": " + str(error))
+
     view = (c.arg_value(argv, "--output", "human") or "human").lower()
     if view == "json":
         sys.stdout.write(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    elif view == "play":
+        try:
+            # rote previews 65,536 bytes of a step's stdout; 48,000 leaves margin.
+            budget = int(c.arg_value(argv, "--budget", "48000"))
+        except ValueError:
+            c.fail("--budget must be a whole number of bytes")
+        sys.stdout.write(render_play(report, budget) + "\n")
     elif view == "summary":
         sys.stdout.write(render_summary(report) + "\n")
     elif view == "patch":
