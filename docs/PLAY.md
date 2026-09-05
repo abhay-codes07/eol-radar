@@ -18,11 +18,12 @@ Play has no access to a private repository, so their run would fail at step one.
 gh repo edit abhay-codes07/eol-radar --visibility public --accept-visibility-change-consequences
 ```
 
-**The tag must exist.** The Play pins `v0.1.0`, so the code it runs is
-immutable and inspectable on GitHub at that exact commit.
+**The tag must exist.** The Play pins `v0.1.2`, so the code it runs is
+immutable and inspectable on GitHub at that exact commit. A code change means a
+new tag and a new Play version; published versions cannot be altered.
 
 ```bash
-git tag -a v0.1.0 -m "EOL Radar 0.1.0" && git push origin v0.1.0
+git tag -a v0.1.2 -m "EOL Radar 0.1.2" && git push origin v0.1.2
 ```
 
 ## 1. Sign in and install
@@ -41,26 +42,31 @@ Your handle becomes the Play's public namespace. Warm up if you have not:
 
 ## 2. The Play's shape
 
-Five parameters, all plain values, none conditional:
+Four parameters, all optional, all plain values, none conditional. `baseline`
+stays a CLI feature: an empty default cannot be reified from a recorded literal.
 
 | parameter | type | default | meaning |
 |---|---|---|---|
 | `root` | string | `.` | repository to scan |
-| `horizon_days` | integer | `'90'` | expiring inside this window counts as dying |
-| `max_packages` | integer | `'300'` | cap on package versions queried |
-| `baseline` | string | `''` | previous JSON result, for a since-last-run diff |
-| `fail_on` | string | `'none'` | `none`, `dying` or `dead`: exit 2 when matched |
+| `horizon_days` | string | `'90'` | expiring inside this window counts as dying |
+| `max_packages` | string | `'300'` | cap on package versions queried |
+| `fail_on` | string | `'none'` | `none`, `dying` or `dead`: the run fails when matched |
 
-Eight steps in four layers. The scanners are independent, read only the
-filesystem, and run in parallel; only `resolve` touches the network.
+Ten steps in six layers. Fetching the scanner is three idempotent git commands;
+the scanners are independent, read only the filesystem, and run in parallel;
+only `resolve` touches the network.
 
 ```
-fetch_tool ─┬─> scan_runtimes ──┐
-            ├─> scan_containers ┤
-            ├─> scan_ci         ├─> resolve ─> join
-            ├─> scan_cloud      ┤
-            └─> scan_packages ──┘
+tool_init ─> tool_fetch ─> tool_checkout ─┬─> scan_runtimes ──┐
+                                          ├─> scan_containers ┤
+                                          ├─> scan_ci         ├─> resolve ─> join
+                                          ├─> scan_cloud      ┤
+                                          └─> scan_packages ──┘
 ```
+
+join emits its bounded `play` view, because rote previews only 65,536 bytes of
+a step's stdout; the complete report is written to `work/report.json` in the
+run workspace.
 
 ## The finished Play is in this repository
 
@@ -103,7 +109,7 @@ export TARGET=/home/abhay/eol-targets/starter-workflows
 rote workspace set root=$TARGET horizon_days=90 max_packages=300 fail_on=none   # these become the parameters
 
 rote proc run git init -q eol-radar-tool
-rote proc run git -C eol-radar-tool fetch -q --depth 1 https://github.com/abhay-codes07/eol-radar.git v0.1.1
+rote proc run git -C eol-radar-tool fetch -q --depth 1 https://github.com/abhay-codes07/eol-radar.git v0.1.2
 rote proc run git -C eol-radar-tool checkout -q --force FETCH_HEAD
 
 rote proc run python3 eol-radar-tool/scripts/scan_runtimes.py   --root $TARGET --out work/runtimes.json
