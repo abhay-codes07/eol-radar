@@ -1,5 +1,9 @@
 # Publishing EOL Radar as a rote Play
 
+Published on 6 September 2026 as `abhay-codes07/eol-radar@0.1.2`:
+https://play.modiqo.ai/abhay-codes07/eol-radar. The procedure below is how it
+was done and how a version bump is done again.
+
 This is the submission procedure. Publishing to Community **is** the entry; there
 is no separate form. Everything here runs in **WSL2 Ubuntu**, because rote and
 play support macOS and Linux only.
@@ -173,14 +177,14 @@ The offline suite covers the same ground without rote:
 
 ```bash
 rote play release eol-radar
-rote registry play push main.ts <handle>
+rote registry play push <package directory> abhay-codes07
 ```
 
 Choose **Community** when asked where the method should live. Then verify it
 the way a judge will, from a directory that has never seen the code:
 
 ```bash
-cd /tmp && rote play run https://play.modiqo.ai/<handle>/eol-radar root=/some/repo --yes
+cd /tmp && rote play run https://play.modiqo.ai/abhay-codes07/eol-radar root=/some/repo --yes
 rote play pending discard eol-radar
 ```
 
@@ -193,7 +197,7 @@ Explicitly rewarded, and this Play is built for it: the countdown to
 
 ```bash
 play recurring probe
-play recurring schedule --reference <handle>/eol-radar@0.1.0 \
+play recurring schedule --reference abhay-codes07/eol-radar@0.1.2 \
   --cadence daily \
   --why "Daily death calendar for my repos; counts down to the Node 20 runner removal" \
   --for 6d

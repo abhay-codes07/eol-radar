@@ -78,6 +78,19 @@ Five things in a repo carry a death date. EOL Radar reads all five:
 Then it answers the three questions a report alone leaves open: which exact
 version to move to, how to make that change everywhere at once, and who owns it.
 
+## Run it as a Play
+
+EOL Radar is published as a [rote](https://www.modiqo.ai) Play, so it can be run
+from any agent harness, inspected before it runs, and scheduled. The Play
+fetches this repository at a pinned tag and runs the same scripts.
+
+```bash
+rote play inspect https://play.modiqo.ai/abhay-codes07/eol-radar
+rote play run https://play.modiqo.ai/abhay-codes07/eol-radar root=/path/to/your/repo
+```
+
+Four optional parameters: `root`, `horizon_days`, `max_packages`, `fail_on`.
+
 ## Install
 
 Nothing to install. Python 3.8 or newer, standard library only. `git` is needed
