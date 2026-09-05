@@ -843,9 +843,13 @@ def main(argv):
     else:
         sys.stdout.write(render_human(report) + "\n")
 
-    if fail_on == "dead" and counts["DEAD"]:
-        sys.exit(2)
-    if fail_on == "dying" and (counts["DEAD"] or counts["DYING"]):
+    tripped = ((fail_on == "dead" and counts["DEAD"])
+               or (fail_on == "dying" and (counts["DEAD"] or counts["DYING"])))
+    if tripped:
+        # A failed step shows only its stderr, so the reason has to be there:
+        # the gate is doing its job, and the summary says what tripped it.
+        sys.stderr.write("eol-radar: fail_on=" + fail_on + " tripped. "
+                         + render_summary(report) + "\n")
         sys.exit(2)
 
 

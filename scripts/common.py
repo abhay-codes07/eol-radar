@@ -38,8 +38,10 @@ def emit(payload):
     if target:
         directory = os.path.dirname(os.path.abspath(target))
         try:
-            if directory and not os.path.isdir(directory):
-                os.makedirs(directory)
+            # Five scanners start at the same instant inside a Play and all
+            # create work/ together; exist_ok keeps the second one from failing.
+            if directory:
+                os.makedirs(directory, exist_ok=True)
             with open(target, "w", encoding="utf-8") as handle:
                 handle.write(text)
         except OSError as error:

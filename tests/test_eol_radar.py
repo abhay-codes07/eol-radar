@@ -1044,6 +1044,48 @@ class TestProcessContract(unittest.TestCase):
         self.assertEqual(payload["subjects"], [])
         self.assertIn("no deployment manifests", payload["warning"])
 
+    def test_out_directory_may_already_exist(self):
+        # Inside a Play five scanners create work/ at the same instant; the
+        # ones that lose the race must not fail on a directory that now exists.
+        workspace = tempfile.mkdtemp()
+        try:
+            target = os.path.join(workspace, "work", "ci.json")
+            os.makedirs(os.path.dirname(target))
+            result = self._run("scan_ci.py", ["--root", EMPTY, "--out", target])
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(os.path.isfile(target))
+            second = self._run("scan_cloud.py", ["--root", EMPTY, "--out",
+                                                 os.path.join(workspace, "work", "cloud.json")])
+            self.assertEqual(second.returncode, 0, second.stderr)
+        finally:
+            import shutil
+            shutil.rmtree(workspace, ignore_errors=True)
+
+    def test_a_tripped_gate_says_why_on_stderr(self):
+        workspace = tempfile.mkdtemp()
+        try:
+            surface = os.path.join(workspace, "s.json")
+            facts = os.path.join(workspace, "f.json")
+            dead = c.subject("runtime", "python 3.9", ".python-version:1", "3.9",
+                             c.eol_lookup("python", "3.9"))
+            with open(surface, "w", encoding="utf-8") as handle:
+                json.dump({"surface": "runtimes", "subjects": [dead], "warning": None,
+                           "files_scanned": 1}, handle)
+            with open(facts, "w", encoding="utf-8") as handle:
+                json.dump({"facts": {"eol:python": STUB_FACTS["eol:python"]}, "ledger": []}, handle)
+            result = subprocess.run(
+                [sys.executable, os.path.join(SCRIPTS, "join.py"), surface, "--facts", facts,
+                 "--root", SAMPLE, "--today", "2026-09-06", "--fail-on", "dead",
+                 "--output", "json"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("fail_on=dead tripped", result.stderr)
+            self.assertIn("1 dead", result.stderr)
+            self.assertTrue(result.stdout.strip().startswith("{"))   # the report still printed
+        finally:
+            import shutil
+            shutil.rmtree(workspace, ignore_errors=True)
+
     def test_join_names_the_report_after_the_scanned_directory(self):
         # A Play step cannot pass a basename, so join must derive it itself.
         workspace = tempfile.mkdtemp()
