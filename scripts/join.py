@@ -179,6 +179,7 @@ def evaluate(subject, facts, rules, today, horizon):
     }
     if subject.get("note"):
         finding["notes"].append(subject["note"])
+    finding["_matrix"] = bool(subject.get("matrix"))
 
     context = {
         "kind": kind,
@@ -204,7 +205,7 @@ def evaluate(subject, facts, rules, today, horizon):
             finding["because"] = "declares runs.using: " + subject["using"]
             if subject["using"] in ed.LIVE_ACTION_RUNTIMES:
                 finding["status"] = "OK"
-        elif reason.startswith("floating label"):
+        elif reason.startswith("floating label") or reason.startswith("local reusable workflow"):
             finding["status"] = "OK"
             finding["because"] = reason
         else:
@@ -273,10 +274,19 @@ def _evaluate_eol(finding, subject, lookup, facts, context):
     finding["date"] = eol_date
     finding["date_kind"] = "eol"
     label = str(product) + " " + str(cycle)
+    requested = str(lookup.get("cycle") or "")
+    if requested and requested != cycle and cycle.startswith(requested + "."):
+        finding["notes"].append("pins only " + requested + ", which floats to the newest "
+                                + requested + ".x release; evaluated as " + cycle)
     if eol_date:
         finding["because"] = label + " end of life " + eol_date.isoformat()
     elif release.get("is_eol"):
         finding["because"] = label + " is marked end of life"
+    elif release.get("is_maintained"):
+        # Maintained with no announced end date is the normal state of a current
+        # release line, not a gap in the data, so it is not reported as unknown.
+        finding["status"] = "OK"
+        finding["because"] = label + " is maintained; no end-of-life date announced yet"
     else:
         finding["because"] = label + " has no published end-of-life date"
     if eoas_date:
@@ -416,6 +426,11 @@ def _finalize(finding, today, horizon):
         finding["status"] = "WATCH"
         finding["notes"].append("active support ended " + eoas.isoformat() + "; security fixes only")
 
+    # A retired version inside a test matrix is covered on purpose. It stays in
+    # the report with its date, but as something to watch rather than a break.
+    if finding.pop("_matrix", False) and finding["status"] in ("DEAD", "DYING"):
+        finding["status"] = "WATCH"
+
     finding["date"] = date.isoformat() if isinstance(date, datetime.date) else None
     finding.pop("_is_eol_flag", None)
     finding.pop("_eoas", None)
@@ -449,6 +464,25 @@ def finding_key(finding):
 # Views
 # ---------------------------------------------------------------------------
 
+def _grouped(findings):
+    """Collapse the same finding at many lines into one entry with its places.
+
+    The JSON keeps one finding per location, which the patch and migration
+    views need. The human view says it once and lists where, because the same
+    SHA-pinned action at fourteen lines is one fact, not fourteen.
+    """
+    order = []
+    places = {}
+    for finding in findings:
+        key = (finding.get("kind"), finding.get("what"), finding.get("because"),
+               finding.get("date"), finding.get("move_to"))
+        if key not in places:
+            places[key] = []
+            order.append((key, finding))
+        places[key].append(str(finding.get("where")))
+    return [(finding, places[key]) for key, finding in order]
+
+
 def render_human(report):
     lines = []
     counts = report["counts"]
@@ -458,7 +492,8 @@ def render_human(report):
     lines.append("=" * min(len(head), 78))
     lines.append("")
 
-    summary_bits = [str(counts[status]) + " " + status.lower() for status in STATUS_ORDER if counts[status]]
+    summary_bits = [_count_phrase(report, status, status.lower())
+                    for status in STATUS_ORDER if counts[status]]
     lines.append("  " + (DOT.strip().join([" " + b + " " for b in summary_bits]).strip()
                           if summary_bits else "nothing found to check"))
     lines.append("")
@@ -473,13 +508,17 @@ def render_human(report):
             continue
         lines.append(status + DASH + HEADLINES[status] + " (" + str(len(group)) + ")")
         lines.append("-" * 78)
-        for finding in group:
+        for finding, places in _grouped(group):
             when = ""
             if finding["date"]:
                 verb = "died" if (finding["days"] is not None and finding["days"] <= 0) else "breaks"
                 when = "  " + verb + " " + finding["date"] + " (" + human_days(finding["days"]) + ")"
             lines.append("  " + str(finding["what"]))
             lines.append("    " + str(finding["where"]) + when)
+            if len(places) > 1:
+                extra = places[1:]
+                listed = ", ".join(extra[:6]) + (", and %d more" % (len(extra) - 6) if len(extra) > 6 else "")
+                lines.append("    also at " + str(len(extra)) + " other place(s): " + listed)
             if finding["because"]:
                 lines.append("    why: " + finding["because"])
             for note in finding["notes"]:
@@ -609,11 +648,20 @@ def render_patch(report, root):
     return "\n".join(header) + "\n\n" + body
 
 
+def _count_phrase(report, status, label):
+    """'3 dying' normally; '3 dying at 188 places' when one fact repeats."""
+    total = report["counts"].get(status, 0)
+    distinct = (report.get("distinct") or {}).get(status, total)
+    if distinct and distinct < total:
+        return "%d %s at %d places" % (distinct, label, total)
+    return "%d %s" % (total, label)
+
+
 def render_summary(report):
     counts = report["counts"]
-    parts = [str(counts["DEAD"]) + " dead",
-             str(counts["DYING"]) + " dying <=" + str(report["horizon_days"]) + "d",
-             str(counts["WATCH"]) + " watch",
+    parts = [_count_phrase(report, "DEAD", "dead"),
+             _count_phrase(report, "DYING", "dying <=" + str(report["horizon_days"]) + "d"),
+             _count_phrase(report, "WATCH", "watch"),
              str(counts["OK"]) + " ok"]
     if counts["UNKNOWN"]:
         parts.append(str(counts["UNKNOWN"]) + " unknown")
@@ -720,6 +768,12 @@ def main(argv):
     counts = {status: 0 for status in STATUS_ORDER}
     for finding in findings:
         counts[finding["status"]] = counts.get(finding["status"], 0) + 1
+    # The same action at 188 lines is one fact, and a reader deciding how bad a
+    # repository is needs to know it is three problems, not 188.
+    distinct = {}
+    for status in STATUS_ORDER:
+        distinct[status] = len({(f.get("kind"), f.get("what"), f.get("because"))
+                                for f in findings if f["status"] == status})
 
     # Who has to do the work, and by when.
     scan_root = c.arg_value(argv, "--root", ".")
@@ -733,6 +787,7 @@ def main(argv):
         "repo": repo_name,
         "horizon_days": horizon,
         "counts": counts,
+        "distinct": distinct,
         "findings": findings,
         "ledger": ledger,
         "enforcement_verified": enforcement.get("verified"),

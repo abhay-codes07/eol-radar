@@ -54,6 +54,15 @@ def _add_image(subjects, reference, where, origin, raw_line):
             extra={"origin": origin},
         ))
         return
+    debian = ed.distroless_debian(name, namespace)
+    if debian:
+        subjects.append(c.subject(
+            "image", reference, where, raw_line, c.eol_lookup("debian", debian),
+            note="distroless image; the Debian release is in the image name",
+            fix="move to a distroless image built on a maintained Debian release",
+            extra={"origin": origin},
+        ))
+        return
     product = ed.image_product(name, namespace)
     if not product:
         subjects.append(c.subject(
@@ -118,15 +127,33 @@ def _dockerfile(root, path, subjects):
                    where_file + ":" + str(number), "dockerfile", line.strip())
 
 
+def _dotenv(path):
+    """KEY=VALUE pairs from the .env file Compose reads next to the compose file."""
+    values = {}
+    for line in c.read_text(path).splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):]
+        key, value = line.split("=", 1)
+        values[key.strip()] = c.unquote(value.strip())
+    return values
+
+
 def _compose(root, path, subjects):
     text = c.read_text(path)
     where_file = c.rel(root, path)
+    # Compose substitutes ${VAR} from the .env beside the file, so resolving it
+    # the same way turns "unresolved variable" into an actual image for most
+    # repositories. Anything still unresolved is reported as such.
+    env = _dotenv(os.path.join(os.path.dirname(path), ".env"))
     for number, _indent, key, value in c.yaml_pairs(text):
         if key != "image":
             continue
         reference = c.scalar(value)
         if reference:
-            _add_image(subjects, reference, where_file + ":" + str(number),
+            _add_image(subjects, _substitute(reference, env), where_file + ":" + str(number),
                        "compose", "image: " + reference)
 
 

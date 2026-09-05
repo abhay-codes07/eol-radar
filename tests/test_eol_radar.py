@@ -661,6 +661,181 @@ class TestMigration(unittest.TestCase):
         self.assertIn("Nothing could be migrated automatically", rendered)
 
 
+class TestPrecisionFromRealRepositories(unittest.TestCase):
+    """Each of these is a wrong or noisy answer seen on a real repository."""
+
+    def _workflow_repo(self, workflow, extra=None):
+        workspace = tempfile.mkdtemp()
+        os.makedirs(os.path.join(workspace, ".github", "workflows"))
+        with open(os.path.join(workspace, ".github", "workflows", "ci.yml"), "w",
+                  encoding="utf-8", newline="\n") as handle:
+            handle.write(workflow)
+        for name, body in (extra or {}).items():
+            path = os.path.join(workspace, name.replace("/", os.sep))
+            directory = os.path.dirname(path)
+            if directory and not os.path.isdir(directory):
+                os.makedirs(directory)
+            with open(path, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(body)
+        return workspace
+
+    def test_go_versions_keep_their_v_for_deps_dev(self):
+        # gin-gonic/gin: 37 dependencies reported "not found" until this.
+        import resolve
+        self.assertTrue(resolve.package_url("go", "github.com/gin-gonic/gin", "1.9.1")
+                        .endswith("/versions/v1.9.1"))
+        self.assertTrue(resolve.package_url("npm", "react", "18.2.0").endswith("/versions/18.2.0"))
+        self.assertIn("%40colors%2Fcolors", resolve.package_url("npm", "@colors/colors", "1.5.0"))
+
+    def test_a_bare_major_floats_to_the_newest_line(self):
+        # redis:7 was "does not match a tracked release line".
+        self.assertEqual(ed.match_cycle("7", ["7.4", "7.2", "6.2"]), "7.4")
+        self.assertEqual(ed.match_cycle("3", ["3.13", "3.12", "3.9"]), "3.13")
+
+    def test_the_x_wildcard_is_a_component_not_a_letter(self):
+        # 1.0.0-next.3 was treated as a range because of the x in "next".
+        self.assertTrue(ed.is_range("1.x"))
+        self.assertTrue(ed.is_range("^20"))
+        self.assertFalse(ed.is_range("1.0.0-next.3"))
+        self.assertFalse(ed.is_range("1.0.0-alpha.5"))
+
+    def test_an_exact_prerelease_pin_is_queried_as_written(self):
+        # @antora/atlas-extension 1.0.0-alpha.5 was queried as 1.0.0, which
+        # does not exist, and came back "not found".
+        workspace = self._workflow_repo("name: x\n", {
+            "package.json": '{"dependencies": {"@antora/atlas-extension": "1.0.0-alpha.5", '
+                            '"react": "^18.2.0", "@types/node": "^20"}}\n',
+        })
+        try:
+            subjects, _, _ = scan_packages.scan(workspace)
+            by_name = {s["label"]: s for s in subjects if s["kind"] == "package"}
+            self.assertIn("@antora/atlas-extension@1.0.0-alpha.5", by_name)
+            self.assertEqual(by_name["@antora/atlas-extension@1.0.0-alpha.5"]["lookup"]["type"], "package")
+            self.assertIn("react@18.2.0", by_name)             # a real floor is checked
+            self.assertIn("@types/node@^20", by_name)          # a bare major is not
+            self.assertEqual(by_name["@types/node@^20"]["lookup"]["type"], "none")
+            self.assertIn("not pinned by a lockfile", by_name["@types/node@^20"]["lookup"]["reason"])
+        finally:
+            import shutil
+            shutil.rmtree(workspace, ignore_errors=True)
+
+    def test_a_maintained_line_with_no_end_date_is_fine_not_unknown(self):
+        # react 19 was UNKNOWN in nineteen findings across the sweep.
+        facts = dict(STUB_FACTS)
+        facts["eol:react"] = {"known": True, "newest_maintained": "19", "newest_lts": None,
+                              "cycles": {"19": {"is_eol": False, "is_maintained": True, "eol": None}}}
+        finding = join.evaluate(c.subject("framework", "react 19", "p:1", "19.0.0",
+                                          c.eol_lookup("react", "19.0.0")), facts, RULES, TODAY, 90)
+        self.assertEqual(finding["status"], "OK")
+        self.assertIn("maintained", finding["because"])
+
+    def test_reusable_workflows_are_not_missing_actions(self):
+        workspace = self._workflow_repo(
+            "jobs:\n  a:\n    uses: ./.github/workflows/build.yml\n"
+            "  b:\n    uses: octo/shared/.github/workflows/lint.yml@v3\n")
+        try:
+            subjects, _ = scan_ci.scan(workspace)
+            kinds = {s["label"]: s for s in subjects if s["kind"] == "workflow"}
+            self.assertIn("./.github/workflows/build.yml", kinds)
+            self.assertIn("octo/shared/.github/workflows/lint.yml@v3", kinds)
+            local = join.evaluate(kinds["./.github/workflows/build.yml"], {}, [], TODAY, 90)
+            self.assertEqual(local["status"], "OK")
+            remote = join.evaluate(kinds["octo/shared/.github/workflows/lint.yml@v3"], {}, [], TODAY, 90)
+            self.assertEqual(remote["status"], "UNKNOWN")
+        finally:
+            import shutil
+            shutil.rmtree(workspace, ignore_errors=True)
+
+    def test_a_test_matrix_of_old_versions_is_watched_not_dead(self):
+        # expressjs/express tests eight retired Node lines on purpose.
+        workspace = self._workflow_repo(
+            "jobs:\n  a:\n    steps:\n      - uses: actions/setup-node@v5\n"
+            "        with:\n          node-version: [16, 18, 20]\n")
+        try:
+            subjects, _ = scan_ci.scan(workspace)
+            tools = [s for s in subjects if s["kind"] == "ci-tool"]
+            self.assertEqual(len(tools), 3)
+            self.assertTrue(all(s.get("matrix") for s in tools))
+            facts = dict(STUB_FACTS)
+            facts["eol:nodejs"]["cycles"]["16"] = {"is_eol": True, "is_maintained": False,
+                                                    "eol": "2023-09-11"}
+            finding = join.evaluate([s for s in tools if "16" in s["label"]][0],
+                                    facts, RULES, TODAY, 90)
+            self.assertEqual(finding["status"], "WATCH")
+            self.assertIn("test matrix", " ".join(finding["notes"]))
+        finally:
+            import shutil
+            shutil.rmtree(workspace, ignore_errors=True)
+
+    def test_a_single_pin_is_still_a_pin(self):
+        workspace = self._workflow_repo(
+            "jobs:\n  a:\n    steps:\n      - uses: actions/setup-node@v5\n"
+            "        with:\n          node-version: 20\n")
+        try:
+            subjects, _ = scan_ci.scan(workspace)
+            tool = [s for s in subjects if s["kind"] == "ci-tool"][0]
+            self.assertFalse(tool.get("matrix"))
+            self.assertEqual(join.evaluate(tool, STUB_FACTS, RULES, TODAY, 90)["status"], "DEAD")
+        finally:
+            import shutil
+            shutil.rmtree(workspace, ignore_errors=True)
+
+    def test_a_missing_local_action_path_says_it_is_made_at_run_time(self):
+        # dotnet/aspnetcore checks arcade out into ./actions before using it.
+        workspace = self._workflow_repo("jobs:\n  a:\n    steps:\n      - uses: ./actions/locker\n")
+        try:
+            subjects, _ = scan_ci.scan(workspace)
+            action = [s for s in subjects if s["kind"] == "action"][0]
+            self.assertIn("created at run time", action["lookup"]["reason"])
+        finally:
+            import shutil
+            shutil.rmtree(workspace, ignore_errors=True)
+
+    def test_distroless_images_carry_their_debian_release_in_the_name(self):
+        # kubernetes/kubernetes: gcr.io/distroless/base-debian10 was unknown.
+        self.assertEqual(ed.distroless_debian("base-debian10", "gcr.io/distroless"), "10")
+        self.assertEqual(ed.distroless_debian("static-debian12", "gcr.io/distroless"), "12")
+        self.assertIsNone(ed.distroless_debian("base-debian10", "docker.io/library"))
+        self.assertIsNone(ed.distroless_debian("python", "gcr.io/distroless"))
+
+    def test_the_same_finding_at_many_lines_is_said_once(self):
+        # facebook/react: actions/cache@v4 at 188 lines.
+        findings = [{"kind": "action", "what": "actions/cache@v4", "because": "x",
+                     "date": "2026-09-23", "move_to": "v5", "where": "wf%d.yml:1" % i}
+                    for i in range(5)]
+        findings.append({"kind": "action", "what": "other@v1", "because": "y",
+                         "date": None, "move_to": None, "where": "a:1"})
+        grouped = join._grouped(findings)
+        self.assertEqual(len(grouped), 2)
+        self.assertEqual(len(grouped[0][1]), 5)
+
+    def test_counts_say_three_problems_not_a_hundred_and_eighty_eight(self):
+        report = {"counts": {"DYING": 188}, "distinct": {"DYING": 3}, "horizon_days": 90}
+        self.assertEqual(join._count_phrase(report, "DYING", "dying"), "3 dying at 188 places")
+        report = {"counts": {"DEAD": 2}, "distinct": {"DEAD": 2}, "horizon_days": 90}
+        self.assertEqual(join._count_phrase(report, "DEAD", "dead"), "2 dead")
+
+    def test_compose_resolves_variables_from_the_dotenv_beside_it(self):
+        # opentelemetry demo: 55 images behind ${VAR} with a .env next to them.
+        workspace = tempfile.mkdtemp()
+        try:
+            with open(os.path.join(workspace, ".env"), "w", encoding="utf-8", newline="\n") as handle:
+                handle.write("# comment\nexport PG_TAG=13\nNODE_IMAGE=node:20-alpine\n")
+            with open(os.path.join(workspace, "docker-compose.yml"), "w",
+                      encoding="utf-8", newline="\n") as handle:
+                handle.write("services:\n  db:\n    image: postgres:${PG_TAG}\n"
+                             "  app:\n    image: ${NODE_IMAGE}\n  x:\n    image: ${UNSET}\n")
+            subjects, _ = scan_containers.scan(workspace)
+            labels_found = {s["label"]: s for s in subjects}
+            self.assertIn("postgres:13", labels_found)
+            self.assertIn("node:20-alpine", labels_found)
+            unresolved = [s for s in subjects if "UNSET" in s["label"]]
+            self.assertEqual(unresolved[0]["lookup"]["type"], "none")
+        finally:
+            import shutil
+            shutil.rmtree(workspace, ignore_errors=True)
+
+
 class TestDiff(unittest.TestCase):
     def test_line_shift_is_not_a_new_finding(self):
         before = {"kind": "action", "what": "actions/checkout@v4", "where": "wf.yml:24", "status": "DYING"}

@@ -31,6 +31,7 @@ class Collector(object):
     def __init__(self):
         self.items = []
         self.seen = set()
+        self.ranges = []
 
     def add(self, system, name, version, where, direct):
         if not name or not version:
@@ -44,6 +45,19 @@ class Collector(object):
             "system": system, "name": name, "version": version,
             "where": where, "direct": direct,
         })
+
+    def add_range(self, system, name, floor, where, raw):
+        """A manifest range such as ^20 names no real version.
+
+        Querying its floor as if it were published produces a false 'not
+        found'. It is kept aside; the lockfile normally supplies the concrete
+        version, and if none does it is reported as unpinned rather than missing.
+        """
+        self.ranges.append({"system": system, "name": name, "version": floor,
+                            "where": where, "raw": raw})
+
+    def concrete_names(self):
+        return set((item["system"], item["name"].lower()) for item in self.items)
 
 
 def _package_json(root, path, out):
@@ -59,15 +73,29 @@ def _package_json(root, path, out):
         for name, raw in block.items():
             if not isinstance(raw, str) or raw.startswith(("workspace:", "file:", "link:", "git", "http")):
                 continue
-            version = ed.clean_version(raw)
-            if not version:
-                continue
             line = 1
             for number, candidate in enumerate(text.splitlines(), start=1):
                 if '"' + name + '"' in candidate:
                     line = number
                     break
-            out.add("npm", name, version, where_file + ":" + str(line), True)
+            where = where_file + ":" + str(line)
+            if not ed.is_range(raw):
+                # An exact pin is queried exactly as written, prerelease and all:
+                # 1.0.0-alpha.5 is a published version and 1.0.0 may not be.
+                exact = raw.strip().lstrip("v=")
+                if exact:
+                    out.add("npm", name, exact, where, True)
+                continue
+            floor = ed.clean_version(raw)
+            if not floor:
+                continue
+            # "^20" and "~4.18" name no real release, so they are kept aside.
+            # "^18.2.0" has a real floor, and checking that floor is useful: it
+            # says whether the oldest version the range admits is deprecated.
+            if floor.count(".") < 2:
+                out.add_range("npm", name, floor, where, raw)
+            else:
+                out.add("npm", name, floor, where, True)
 
 
 def _package_lock(root, path, out):
@@ -168,7 +196,9 @@ def _pipfile_lock(root, path, out):
             continue
         for name, entry in block.items():
             if isinstance(entry, dict):
-                version = ed.clean_version(entry.get("version"))
+                # Pipfile.lock pins as "==1.2.3rc1"; keep everything after the
+                # operator so a prerelease is queried as itself.
+                version = str(entry.get("version") or "").strip().lstrip("=").strip()
                 if version:
                     out.add("pypi", name, version, where, section == "default")
 
@@ -206,7 +236,9 @@ def _gemfile_lock(root, path, out):
             continue
         match = re.match(r"^\s{4}([A-Za-z0-9._-]+) \(([^)]+)\)\s*$", line)
         if match:
-            version = ed.clean_version(match.group(2))
+            # The lockfile version is exact, prerelease and platform suffix
+            # included: 1.0.0.beta1 is a real gem, 1.0.0 may not be.
+            version = match.group(2).strip().split("-")[0]
             if version:
                 out.add("rubygems", match.group(1), version, where, False)
 
@@ -222,7 +254,9 @@ def _composer_lock(root, path, out):
             continue
         for entry in block:
             if isinstance(entry, dict):
-                version = ed.clean_version(entry.get("version"))
+                # composer.lock records exact tags such as v1.2.3 or 2.0.0-RC1;
+                # only the leading v is decoration.
+                version = str(entry.get("version") or "").strip().lstrip("v")
                 if version:
                     out.add("packagist", entry.get("name"), version, where, section == "packages")
 
@@ -304,6 +338,31 @@ def scan(root, max_depth=8, max_packages=300):
             subjects.append(c.subject(
                 "framework", product + " " + version, item["where"], label,
                 c.eol_lookup(product, version),
+                fix="upgrade to a supported " + product + " release line",
+                extra={"system": system},
+            ))
+
+    # Ranges the lockfile did not pin. They cost no query budget, they are
+    # reported as unpinned rather than "not found", and a framework range still
+    # gets its lifecycle check because the major line is what that answers.
+    concrete = out.concrete_names()
+    for item in out.ranges:
+        system, name = item["system"], item["name"]
+        if (system, name.lower()) in concrete:
+            continue
+        label = name + "@" + item["raw"]
+        subjects.append(c.subject(
+            "package", label, item["where"], item["raw"],
+            c.no_lookup("range '" + item["raw"] + "' is not pinned by a lockfile; "
+                        "nothing concrete to check"),
+            extra={"system": system, "direct": True, "range": True},
+        ))
+        product = ed.FRAMEWORK_PRODUCTS.get((system, name.lower()))
+        if product:
+            subjects.append(c.subject(
+                "framework", product + " " + item["version"], item["where"], label,
+                c.eol_lookup(product, item["version"]),
+                note="floor of the declared range",
                 fix="upgrade to a supported " + product + " release line",
                 extra={"system": system},
             ))

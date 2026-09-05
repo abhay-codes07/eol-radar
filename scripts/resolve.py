@@ -107,18 +107,41 @@ class Http(object):
         for key, value in (headers or {}).items():
             request.add_header(key, value)
         body, error = None, None
-        try:
-            self.stats["fetches"] += 1
-            with urlrequest.urlopen(request, timeout=self.timeout) as response:
-                raw = response.read().decode("utf-8", "replace")
-            body = json.loads(raw) if as_json else raw
-        except urlerror.HTTPError as exc:
-            error = "http " + str(exc.code)
-            self.stats["errors"] += 1
-        except (urlerror.URLError, ValueError, OSError) as exc:
-            error = "unreachable: " + str(getattr(exc, "reason", exc))[:120]
-            self.stats["errors"] += 1
-        self._write_cache(url, {"body": body, "error": error})
+        # A big repository fans out dozens of fetches to the same host, and
+        # raw.githubusercontent answers a burst with 429. One throttled reply
+        # must not turn into "unreachable" in the report, so transient statuses
+        # are retried with a short backoff before the failure is recorded.
+        for attempt in range(3):
+            error = None
+            try:
+                self.stats["fetches"] += 1
+                with urlrequest.urlopen(request, timeout=self.timeout) as response:
+                    raw = response.read().decode("utf-8", "replace")
+                body = json.loads(raw) if as_json else raw
+                break
+            except urlerror.HTTPError as exc:
+                error = "http " + str(exc.code)
+                if exc.code in (429, 500, 502, 503, 504) and attempt < 2:
+                    retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                    try:
+                        delay = min(float(retry_after), 10.0) if retry_after else 1.5 * (attempt + 1)
+                    except ValueError:
+                        delay = 1.5 * (attempt + 1)
+                    time.sleep(delay)
+                    continue
+                self.stats["errors"] += 1
+                break
+            except (urlerror.URLError, ValueError, OSError) as exc:
+                error = "unreachable: " + str(getattr(exc, "reason", exc))[:120]
+                if attempt < 2:
+                    time.sleep(1.5 * (attempt + 1))
+                    continue
+                self.stats["errors"] += 1
+                break
+        # Only a definitive answer is worth remembering; a throttled or failed
+        # fetch is retried on the next run instead of being cached as a fact.
+        if error is None or error == "http 404":
+            self._write_cache(url, {"body": body, "error": error})
         return body, error
 
 
@@ -205,38 +228,93 @@ def find_action_upgrade(http, owner, repo, path, ref):
     return None
 
 
+def _using_from(text):
+    in_runs = False
+    for _number, indent, key, value in c.yaml_pairs(text or ""):
+        if indent == 0:
+            in_runs = (key == "runs")
+            continue
+        if in_runs and key == "using":
+            return c.scalar(value).lower()
+    return None
+
+
 def fetch_action(http, owner, repo, path, ref):
     prefix = RAW_GITHUB + "/".join([owner, repo, ref])
     subdir = (path + "/") if path else ""
+    not_found = 0
+    hard_error = None
     for filename in ("action.yml", "action.yaml"):
         url = prefix + "/" + subdir + filename
         body, error = http.get(url, as_json=False)
         if error:
+            if error == "http 404":
+                not_found += 1
+            else:
+                hard_error = error
             continue
-        using = None
-        in_runs = False
-        for _number, indent, key, value in c.yaml_pairs(body or ""):
-            if indent == 0:
-                in_runs = (key == "runs")
-                continue
-            if in_runs and key == "using":
-                using = c.scalar(value).lower()
-                break
+        using = _using_from(body)
         if using:
             return {"known": True, "using": using, "source": url}
         return {"known": False, "reason": "action.yml has no runs.using (reusable workflow?)", "source": url}
-    return {"known": False, "reason": "no action.yml readable at " + owner + "/" + repo + "@" + ref,
-            "degraded": True}
+
+    # raw.githubusercontent does not serve every commit that GitHub's own API
+    # does. Two clean 404s there are not proof the file is missing, so the
+    # contents API is asked once. It costs API budget, which is why it is the
+    # fallback and not the first call.
+    if not_found == 2:
+        token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or ""
+        headers = {"Authorization": "Bearer " + token} if token else {}
+        for filename in ("action.yml", "action.yaml"):
+            url = (GITHUB_API + owner + "/" + repo + "/contents/" + subdir + filename
+                   + "?ref=" + urlparse.quote(ref, safe=""))
+            payload, error = http.get(url, headers=headers)
+            if error or not isinstance(payload, dict):
+                if error and error != "http 404":
+                    hard_error = error
+                continue
+            content = payload.get("content")
+            if payload.get("encoding") == "base64" and content:
+                import base64
+                try:
+                    text = base64.b64decode(content).decode("utf-8", "replace")
+                except (ValueError, TypeError):
+                    continue
+                using = _using_from(text)
+                source = payload.get("html_url") or url
+                if using:
+                    return {"known": True, "using": using, "source": source}
+                return {"known": False, "reason": "action.yml has no runs.using (reusable workflow?)",
+                        "source": source}
+
+    # A definitive 404 everywhere is an answer, not a degradation: the ref has
+    # no action file. Only a throttle or outage is reported as unreachable.
+    return {"known": False,
+            "reason": "no action.yml at " + owner + "/" + repo + "@" + ref
+            + (" (" + hard_error + ")" if hard_error else "; the ref may not exist"),
+            "degraded": bool(hard_error)}
 
 
 # ---------------------------------------------------------------------------
 # Packages
 # ---------------------------------------------------------------------------
 
+def package_url(system, name, version):
+    """The deps.dev address of one package version.
+
+    deps.dev keys Go module versions with their leading v, exactly as go.mod
+    writes them; every other ecosystem is keyed on the bare number. Getting
+    this wrong reports every Go dependency as not found.
+    """
+    version = str(version)
+    if system == "go" and not version.startswith("v"):
+        version = "v" + version
+    return (DEPSDEV_API + system.upper() + "/packages/" + urlparse.quote(name, safe="")
+            + "/versions/" + urlparse.quote(version, safe=""))
+
+
 def fetch_package(http, system, name, version):
-    encoded = urlparse.quote(name, safe="")
-    url = (DEPSDEV_API + system.upper() + "/packages/" + encoded
-           + "/versions/" + urlparse.quote(version, safe=""))
+    url = package_url(system, name, version)
     payload, error = http.get(url)
     fact = {"known": False, "deprecated": False, "reason": None, "repo": None}
     if not error and isinstance(payload, dict):

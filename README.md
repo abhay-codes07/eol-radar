@@ -335,9 +335,34 @@ python scripts/scan_ci.py --root . | python -m json.tool
 python -m unittest discover -s tests -v
 ```
 
-78 tests, no network, fixed clock. The verdict engine is tested against a stub
+91 tests, no network, fixed clock. The verdict engine is tested against a stub
 fact set so the expected output does not change when endoflife.date publishes a
 new release. Verified on Python 3.10 (Windows) and 3.12 (Linux).
+
+## Tested against real repositories
+
+Correctness was checked by running it against fifteen repositories across Go,
+Rust, Java, Ruby, PHP, .NET, Python and JavaScript, from gin and tokio to
+kubernetes, rails, spring-boot and dotnet/aspnetcore, and then checking every
+dead and dying claim by hand against the upstream source. No run crashed.
+Several of those runs found something wrong with the tool, and each of those
+is now a test:
+
+- Go module versions were sent to deps.dev without their leading `v`, so every
+  Go dependency came back "not found". On gin that was 37 unknowns; now 0.
+- A deliberate test matrix of retired Node versions was reported as eight dead
+  pins. It is now watched, with the note that covering an old release on
+  purpose is not a broken pin.
+- An exact prerelease pin such as `1.0.0-alpha.5` was queried as `1.0.0`, a
+  version that was never published.
+- A bare major like `redis:7` or `^20` was queried as if it were a release.
+  It now floats to the newest line it prefixes, or is reported as unpinned.
+- raw.githubusercontent refuses some commits that GitHub's own API serves.
+  After two clean 404s the contents API is asked once.
+- The same SHA-pinned action at 188 lines in facebook/react was 188 findings.
+  The JSON still has all of them; the report says it once and counts it as
+  three problems at 188 places.
+- Distroless images carry their Debian release in the name, not the tag.
 
 ## Limits, stated plainly
 

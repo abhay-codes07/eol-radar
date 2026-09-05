@@ -102,6 +102,16 @@ def _uses_subjects(root, path, text, subjects, local_cache):
         if not value or _EXPRESSION.search(value):
             continue
         where = where_file + ":" + str(number)
+        if value.split("@")[0].endswith((".yml", ".yaml")):
+            # A reusable workflow, not an action: it has no runs.using of its
+            # own. A local one is scanned where it lives; a remote one runs in
+            # another repository and is reported rather than guessed at.
+            local = value.startswith("./") or value.startswith("../")
+            reason = ("local reusable workflow; its jobs are scanned as part of this repository"
+                      if local else
+                      "remote reusable workflow; its jobs live in another repository and are not inspected")
+            subjects.append(c.subject("workflow", value, where, value, c.no_lookup(reason)))
+            continue
         if value.startswith("./") or value.startswith("../"):
             _local_action(root, value, where, subjects, local_cache)
             continue
@@ -143,10 +153,15 @@ def _local_action(root, value, where, subjects, local_cache):
                 break
         local_cache[relative] = (using, source)
     if not using:
+        shown = relative or "the repository root"
+        exists = os.path.isdir(os.path.join(root, relative.replace("/", os.sep))) if relative else True
+        reason = ("local action at " + shown + " has no runs.using in its action.yml"
+                  if exists else
+                  "no such path in the repository; it is probably created at run time by a "
+                  "checkout step, so it cannot be inspected here")
         subjects.append(c.subject(
-            "action", value, where, value,
-            c.no_lookup("local action; no action.yml found or no runs.using declared"),
-            note="local action at " + relative,
+            "action", value, where, value, c.no_lookup(reason),
+            note="local action at " + shown,
         ))
         return
     subjects.append(c.subject(
@@ -180,7 +195,12 @@ def _tool_subjects(root, path, text, subjects):
         raw = c.strip_comment(value)
         if not raw or _EXPRESSION.search(raw):
             continue
-        for candidate in c.flow_list(raw):
+        candidates = c.flow_list(raw)
+        # Several versions on one line is a compatibility matrix: the old ones
+        # are there on purpose, to prove the code still runs on them. That is a
+        # choice to report, not a pin about to break, so it is marked as such.
+        matrix = len(candidates) > 1
+        for candidate in candidates:
             version = ed.clean_version(candidate)
             if not version:
                 continue
@@ -188,6 +208,9 @@ def _tool_subjects(root, path, text, subjects):
                 "ci-tool", product + " " + version + " (" + key + ")",
                 where_file + ":" + str(number), candidate,
                 c.eol_lookup(product, version),
+                note=("one of " + str(len(candidates)) + " versions in a test matrix; "
+                      "deliberately covering an old release is not a broken pin") if matrix else None,
+                extra={"matrix": True} if matrix else None,
             ))
 
 

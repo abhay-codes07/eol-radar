@@ -166,6 +166,21 @@ def image_product(name, namespace=""):
     return IMAGE_PRODUCTS.get(name)
 
 
+_DISTROLESS = re.compile(r"^[a-z0-9]+-debian(\d+)$")
+
+
+def distroless_debian(name, namespace):
+    """gcr.io/distroless/base-debian12 carries its Debian release in the name.
+
+    The tag on those images is a digest or 'nonroot', never a version, so the
+    usual tag parsing finds nothing. Returns the Debian cycle or None.
+    """
+    if "distroless" not in (namespace or ""):
+        return None
+    match = _DISTROLESS.match(name or "")
+    return match.group(1) if match else None
+
+
 def cycle_from_tag(product, tag):
     """Turn a Docker tag into something matchable against endoflife.date cycles.
 
@@ -203,9 +218,13 @@ def clean_version(raw):
 
 
 def is_range(raw):
-    """True when a pin admits several versions (^, ~, >=, *, x)."""
-    text = str(raw or "")
-    return bool(re.search(r"[\^~*x><|]|\s-\s", text))
+    """True when a pin admits several versions (^, ~, >=, *, 1.x).
+
+    The x wildcard only counts as a whole version component, so the letter in
+    1.0.0-next.3 does not turn an exact prerelease pin into a range.
+    """
+    text = str(raw or "").strip()
+    return bool(re.search(r"[\^~*><|]|\s-\s|(?:^|\.)[xX](?:\.|$)", text))
 
 
 def match_cycle(version, cycle_names):
@@ -234,6 +253,19 @@ def match_cycle(version, cycle_names):
     head = version.split(".")[0]
     if head in names:
         return head
+    # A bare major such as redis:7 or python:3 floats to the newest release of
+    # that line, so it is evaluated as the newest cycle it prefixes: 7 -> 7.4.
+    parts = version.split(".")
+    candidates = []
+    for name in names:
+        name_parts = name.split(".")
+        if len(name_parts) > len(parts) and name_parts[:len(parts)] == parts:
+            try:
+                candidates.append((tuple(int(p) for p in name_parts), name))
+            except ValueError:
+                continue
+    if candidates:
+        return max(candidates)[1]
     return None
 
 
