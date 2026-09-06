@@ -1,0 +1,13 @@
+{
+ "status": "blocked",
+ "output": {
+  "reason": "upstream_failed",
+  "blocked_by": [
+   "scan_runtimes",
+   "scan_containers",
+   "scan_ci",
+   "scan_cloud",
+   "scan_packages"
+  ]
+ }
+}

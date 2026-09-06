@@ -1,7 +1,9 @@
 schema_version = 1
 
-# Tools the Play's steps actually invoke. Nothing else is declared: a phantom
-# dependency is a barrier to somebody running this for the first time.
+# The one tool the steps invoke. The scanner itself travels inside the package
+# under resources/, so nothing is fetched or installed at run time and nothing
+# but a Python interpreter is needed on the host. Stock macOS ships 3.9, every
+# supported Ubuntu ships 3.10 or newer, and the code is written to 3.8.
 
 [[tools]]
 id = "python3"
@@ -9,7 +11,14 @@ command = "python3"
 required = true
 version_requirement = ">=3.8"
 
-[[tools]]
-id = "git"
-command = "git"
-required = true
+[[tools.install]]
+manager = "brew"
+package = "python@3"
+
+[[tools.install]]
+manager = "apt"
+package = "python3"
+
+[[tools.install]]
+manager = "dnf"
+package = "python3"

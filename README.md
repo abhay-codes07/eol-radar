@@ -81,15 +81,21 @@ version to move to, how to make that change everywhere at once, and who owns it.
 ## Run it as a Play
 
 EOL Radar is published as a [rote](https://www.modiqo.ai) Play, so it can be run
-from any agent harness, inspected before it runs, and scheduled. The Play
-fetches this repository at a pinned tag and runs the same scripts.
+from any agent harness, inspected before it runs, and scheduled. The package on
+the registry contains the whole scanner: the same scripts as this repository,
+under `resources/`, invoked with the system `python3`. Nothing is fetched at run
+time and `python3` is the only host tool.
 
 ```bash
 rote play inspect https://play.modiqo.ai/abhay-codes07/eol-radar
-rote play run https://play.modiqo.ai/abhay-codes07/eol-radar root=/path/to/your/repo
+rote play run https://play.modiqo.ai/abhay-codes07/eol-radar root=/path/to/your/repo --yes
 ```
 
 Four optional parameters: `root`, `horizon_days`, `max_packages`, `fail_on`.
+The package is built from this repository by `play/pack.py`, ships a recorded
+presentation fixture and three negative cases for every step, and passes
+`rote play lint`, `play audit run` (0 findings) and `play audit rehearse`
+(21 of 21 negative cases). `docs/PLAY.md` is the runbook.
 
 ## Install
 
@@ -356,7 +362,7 @@ python scripts/scan_ci.py --root . | python -m json.tool
 python -m unittest discover -s tests -v
 ```
 
-95 tests, no network, fixed clock. The verdict engine is tested against a stub
+119 tests, no network, fixed clock. The verdict engine is tested against a stub
 fact set so the expected output does not change when endoflife.date publishes a
 new release. Verified on Python 3.10 (Windows) and 3.12 (Linux).
 

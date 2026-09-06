@@ -1,0 +1,1 @@
+{"files_scanned": 0, "ok": true, "subjects": [], "surface": "cloud", "warning": "no deployment manifests found (serverless, SAM, Terraform, CDK, Vercel, Netlify)"}
