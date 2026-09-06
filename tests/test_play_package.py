@@ -98,7 +98,7 @@ class TestPackageContents(unittest.TestCase):
 
     def test_declared_presentation_fixtures_exist(self):
         paths = pack.fixture_paths(os.path.join(self.tmp, "main.ts"))
-        self.assertEqual(len(paths), 7, paths)
+        self.assertEqual(len(paths), 8, paths)
         for path in paths:
             self.assertTrue(os.path.isfile(os.path.join(self.tmp, path)), path)
 
@@ -122,12 +122,38 @@ class TestStepsAreSelfContained(unittest.TestCase):
         self.fm = pack.frontmatter(MAIN_TS)
         self.steps = steps_of(self.fm)
 
-    def test_seven_steps_in_three_layers(self):
-        self.assertEqual(sorted(self.steps), sorted(SCANNERS + ["resolve", "join"]))
+    def test_eight_steps_in_four_layers(self):
+        self.assertEqual(sorted(self.steps), sorted(SCANNERS + ["resolve", "join", "gate"]))
         for name in SCANNERS:
             self.assertEqual(self.steps[name]["depends_on"], [], name + " should be a root step")
         self.assertEqual(sorted(self.steps["resolve"]["depends_on"]), sorted(SCANNERS))
         self.assertEqual(self.steps["join"]["depends_on"], ["resolve"])
+        self.assertEqual(self.steps["gate"]["depends_on"], ["join"])
+
+    def test_the_play_refuses_to_guess_the_repository(self):
+        # A step's working directory is rote's workspace, so a relative root
+        # would scan rote's own files. root is required with no default, and
+        # every scanner runs with --in-play, which refuses anything but an
+        # absolute path outside the workspace.
+        block = re.search(r"- name: root\n(.*?)\n\s*- name: horizon_days", self.fm, re.S).group(1)
+        self.assertIn("required: true", block)
+        self.assertNotIn("default:", block)
+        for name in SCANNERS:
+            self.assertIn("--in-play", self.steps[name]["argv"], name)
+
+    def test_writes_stay_inside_the_run_workspace(self):
+        argv = self.steps["resolve"]["argv"]
+        self.assertEqual(argv[argv.index("--cache") + 1], "work/cache")
+        for name, step in self.steps.items():
+            for arg in step["argv"]:
+                self.assertFalse(arg.startswith("/") or arg.startswith("~"),
+                                 "%s reaches outside the workspace: %s" % (name, arg))
+
+    def test_the_gate_is_its_own_step_so_a_tripped_gate_never_hides_the_report(self):
+        self.assertNotIn("--fail-on", self.steps["join"]["argv"])
+        argv = self.steps["gate"]["argv"]
+        self.assertEqual(argv[argv.index("--fail-on") + 1], "$fail_on")
+        self.assertEqual(argv[argv.index("--report") + 1], "work/report.json")
 
     def test_every_step_runs_a_packaged_script_with_the_system_python(self):
         for name, step in self.steps.items():
@@ -151,7 +177,7 @@ class TestStepsAreSelfContained(unittest.TestCase):
         # The scanners and join must not import anything that opens a socket;
         # resolve is the one step allowed to, and it only reads.
         network = {"urllib", "http", "socket", "ssl", "ftplib", "smtplib", "requests"}
-        for name in SCANNERS + ["join"]:
+        for name in SCANNERS + ["join", "gate"]:
             path = os.path.join(REPO, "scripts", name + ".py")
             tree = ast.parse(read_text(path))
             for node in ast.walk(tree):

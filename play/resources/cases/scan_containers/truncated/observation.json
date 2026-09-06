@@ -18,9 +18,9 @@
     "timeout_ms": 60000
    },
    "stdout": {
-    "bytes": 100069,
-    "text": "{\"files_scanned\": 0, \"ok\": true, \"subjects\": [], \"surface\": \"containe",
-    "preview_bytes": 69,
+    "bytes": 100112,
+    "text": "{\"files_scanned\": 0, \"full_output\": \"work/containers.json\", \"ok\": true, \"subjects_count\": 0, \"surface\": \"contain",
+    "preview_bytes": 112,
     "truncated": true,
     "encoding": "utf8"
    },

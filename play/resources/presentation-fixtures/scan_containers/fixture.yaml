@@ -4,7 +4,7 @@ status:
   exit:
     kind: code
     code: 0
-  duration_ms: 41
+  duration_ms: 40
   timeout_ms: 60000
 stdout: resources/presentation-fixtures/scan_containers/stdout.json
 stderr: resources/presentation-fixtures/scan_containers/stderr.txt

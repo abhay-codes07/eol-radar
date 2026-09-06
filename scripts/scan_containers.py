@@ -182,7 +182,7 @@ def scan(root, max_depth=8):
 
 
 def main(argv):
-    root = c.check_root(c.arg_value(argv, "--root", "."))
+    root = c.check_root(c.arg_value(argv, "--root", "."), in_play=c.arg_flag(argv, "--in-play"))
     depth = int(c.arg_value(argv, "--depth", "8"))
     subjects, scanned = scan(root, depth)
     warning = None if scanned else "no Dockerfile, compose or devcontainer files found"

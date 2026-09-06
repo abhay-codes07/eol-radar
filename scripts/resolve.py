@@ -54,6 +54,14 @@ def cache_dir():
     return os.path.join(tempfile.gettempdir(), "eol-radar-cache")
 
 
+def _reset_phrase(value):
+    """GitHub's rate-limit 403 carries x-ratelimit-reset, an epoch second."""
+    try:
+        return "; resets " + time.strftime("%H:%M UTC", time.gmtime(int(value)))
+    except (TypeError, ValueError, OverflowError, OSError):
+        return ""
+
+
 class Http(object):
     """Small cached HTTP reader that knows when to stop trying.
 
@@ -65,7 +73,8 @@ class Http(object):
     is up and resets the count.
     """
 
-    def __init__(self, ttl=DEFAULT_TTL, use_cache=True, timeout=15, breaker_threshold=3):
+    def __init__(self, ttl=DEFAULT_TTL, use_cache=True, timeout=15, breaker_threshold=3,
+                 directory=None):
         self.ttl = ttl
         self.use_cache = use_cache
         self.timeout = timeout
@@ -73,7 +82,10 @@ class Http(object):
         self.backoff = 1.5
         self.opener = urlrequest.urlopen
         self.host_failures = {}
-        self.directory = cache_dir()
+        # Inside a Play the cache lives in the run workspace (--cache
+        # work/cache), so the only thing the Play ever writes is its own
+        # scratch directory. The command line keeps a cache in the temp dir.
+        self.directory = directory or cache_dir()
         self.stats = {"hits": 0, "fetches": 0, "errors": 0, "skipped": 0}
         if self.use_cache:
             try:
@@ -140,6 +152,13 @@ class Http(object):
             except urlerror.HTTPError as exc:
                 error = "http " + str(exc.code)
                 self.host_failures[host] = 0          # the host answered
+                remaining = exc.headers.get("x-ratelimit-remaining") if exc.headers else None
+                if exc.code == 403 and str(remaining).strip() == "0":
+                    # GitHub answers an exhausted quota with 403 and no
+                    # Retry-After. Say so, and say when it resets: that is a
+                    # fact about the caller's quota, not about the repository.
+                    error = ("http 403 rate limit reached"
+                             + _reset_phrase(exc.headers.get("x-ratelimit-reset")))
                 if exc.code in (429, 500, 502, 503, 504) and attempt < 2:
                     retry_after = exc.headers.get("Retry-After") if exc.headers else None
                     try:
@@ -424,7 +443,7 @@ def run_parallel(items, worker, workers):
         return list(pool.map(worker, items))
 
 
-VALUE_FLAGS = {"--workers", "--cache-ttl", "--github-budget", "--out"}
+VALUE_FLAGS = {"--workers", "--cache-ttl", "--github-budget", "--out", "--cache"}
 
 
 def main(argv):
@@ -440,7 +459,8 @@ def main(argv):
 
     workers = int(c.arg_value(argv, "--workers", "8"))
     ttl = int(c.arg_value(argv, "--cache-ttl", str(DEFAULT_TTL)))
-    http = Http(ttl=ttl, use_cache=not c.arg_flag(argv, "--no-cache"))
+    http = Http(ttl=ttl, use_cache=not c.arg_flag(argv, "--no-cache"),
+                directory=c.arg_value(argv, "--cache"))
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or ""
     budget = int(c.arg_value(argv, "--github-budget", "200" if token else "15"))
 

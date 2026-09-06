@@ -483,6 +483,32 @@ def _grouped(findings):
     return [(finding, places[key]) for key, finding in order]
 
 
+# An empty scan is not a clean one. When no surface produced a single subject
+# the report says so in these words, and never prints "0 dead".
+NON_OBSERVATION = [
+    "  Nothing to check: no runtime pins, base images, workflows, deployment",
+    "  manifests or package manifests were found under this root.",
+    "  That is a non-observation, not a clean bill of health. Check that root",
+    "  points at the repository, as an absolute path.",
+]
+
+
+def observed(report):
+    return any(report["counts"].get(status) for status in STATUS_ORDER)
+
+
+def _unreadable_list(report):
+    """One entry per directory a scanner could not open, naming the scanners
+    that hit it: 'secrets (ci, packages)'. Five scanners walking the same
+    tree meet the same directory five times; it is still one directory."""
+    by_directory = {}
+    for surface, dirs in sorted((report.get("unreadable") or {}).items()):
+        for directory in dirs:
+            by_directory.setdefault(str(directory), []).append(str(surface))
+    return [directory + " (" + ", ".join(surfaces) + ")"
+            for directory, surfaces in sorted(by_directory.items())]
+
+
 def render_human(report):
     lines = []
     counts = report["counts"]
@@ -494,9 +520,21 @@ def render_human(report):
 
     summary_bits = [_count_phrase(report, status, status.lower())
                     for status in STATUS_ORDER if counts[status]]
-    lines.append("  " + (DOT.strip().join([" " + b + " " for b in summary_bits]).strip()
-                          if summary_bits else "nothing found to check"))
+    if summary_bits:
+        lines.append("  " + DOT.strip().join([" " + b + " " for b in summary_bits]).strip())
+    else:
+        lines.extend(NON_OBSERVATION)
     lines.append("")
+    skipped_dirs = _unreadable_list(report)
+    if skipped_dirs:
+        lines.append("  PARTIAL: " + str(len(skipped_dirs)) + " director"
+                     + ("y" if len(skipped_dirs) == 1 else "ies")
+                     + " could not be read, so this scan is incomplete:")
+        for entry in skipped_dirs[:10]:
+            lines.append("    " + entry)
+        if len(skipped_dirs) > 10:
+            lines.append("    and " + str(len(skipped_dirs) - 10) + " more")
+        lines.append("")
 
     shown = [f for f in report["findings"] if f["status"] != "OK"]
     if not shown:
@@ -679,6 +717,7 @@ def render_play(report, budget):
         "counts": report["counts"],
         "distinct": report["distinct"],
         "ok_hidden": report["counts"].get("OK", 0),
+        "unreadable": report.get("unreadable") or {},
         "findings_total": len(report["findings"]),
         "ledger": report["ledger"],
         "ownership": report.get("ownership"),
@@ -712,6 +751,16 @@ def render_play(report, budget):
 
 def render_summary(report):
     counts = report["counts"]
+    skipped_dirs = _unreadable_list(report)
+    partial = ""
+    if skipped_dirs:
+        partial = (DOT + "partial: " + str(len(skipped_dirs)) + " unreadable director"
+                   + ("y" if len(skipped_dirs) == 1 else "ies"))
+    if not observed(report):
+        return ("EOL Radar: nothing to check under repo=" + str(report["repo"]) + DOT
+                + "no runtime pins, base images, workflows, deployment manifests or package "
+                "manifests found" + DOT + "non-observation, not a clean bill of health" + partial
+                + DOT + str(report["generated_at"]))
     parts = [_count_phrase(report, "DEAD", "dead"),
              _count_phrase(report, "DYING", "dying <=" + str(report["horizon_days"]) + "d"),
              _count_phrase(report, "WATCH", "watch"),
@@ -722,6 +771,7 @@ def render_summary(report):
     tail = ""
     if soonest:
         tail = DOT + "next: " + str(soonest["what"]) + " " + str(soonest["date"])
+    tail += partial
     return ("EOL Radar: " + DOT.join(parts) + DOT + "repo=" + report["repo"]
             + DOT + report["generated_at"] + tail)
 
@@ -803,6 +853,7 @@ def main(argv):
 
     ledger = list(facts_blob.get("ledger") or [])
     findings = []
+    unreadable = {}
     for path in surface_paths:
         surface = c.read_json(path)
         if not isinstance(surface, dict):
@@ -812,13 +863,24 @@ def main(argv):
         status = "ok"
         if surface.get("warning"):
             status = "skipped" if not subjects else "degraded"
+        note = surface.get("warning") or (str(len(subjects)) + " item(s) from "
+                                          + str(surface.get("files_scanned", 0)) + " file(s)")
+        skipped_dirs = [str(d) for d in (surface.get("unreadable") or [])]
+        if skipped_dirs:
+            # A directory the walk could not open makes the scan partial,
+            # whatever it found elsewhere; say so and name the directory.
+            status = "degraded"
+            total = int(surface.get("unreadable_count") or len(skipped_dirs))
+            note += ("; " + str(total) + " director" + ("y" if total == 1 else "ies")
+                     + " could not be read: " + ", ".join(skipped_dirs[:3])
+                     + (", ..." if total > 3 else ""))
+            unreadable[name] = skipped_dirs
         ledger.insert(0, {
             "source": "scan: " + name,
             "status": status,
             "attempted": len(subjects),
-            "degraded": 0,
-            "note": surface.get("warning") or (str(len(subjects)) + " item(s) from "
-                                               + str(surface.get("files_scanned", 0)) + " file(s)"),
+            "degraded": len(skipped_dirs),
+            "note": note,
         })
         for subject in subjects:
             findings.append(evaluate(subject, facts, rules, today, horizon))
@@ -849,6 +911,7 @@ def main(argv):
         "distinct": distinct,
         "findings": findings,
         "ledger": ledger,
+        "unreadable": unreadable,
         "enforcement_verified": enforcement.get("verified"),
         "ownership": coverage,
         "exposure_by_quarter": ownership.exposure(findings),

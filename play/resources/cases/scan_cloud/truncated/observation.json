@@ -18,9 +18,9 @@
     "timeout_ms": 60000
    },
    "stdout": {
-    "bytes": 100082,
-    "text": "{\"files_scanned\": 0, \"ok\": true, \"subjects\": [], \"surface\": \"cloud\", \"warning\": \"n",
-    "preview_bytes": 82,
+    "bytes": 100122,
+    "text": "{\"files_scanned\": 0, \"full_output\": \"work/cloud.json\", \"ok\": true, \"subjects_count\": 0, \"surface\": \"cloud\", \"unreadable\": ",
+    "preview_bytes": 122,
     "truncated": true,
     "encoding": "utf8"
    },

@@ -370,7 +370,7 @@ def scan(root, max_depth=8, max_packages=300):
 
 
 def main(argv):
-    root = c.check_root(c.arg_value(argv, "--root", "."))
+    root = c.check_root(c.arg_value(argv, "--root", "."), in_play=c.arg_flag(argv, "--in-play"))
     depth = int(c.arg_value(argv, "--depth", "8"))
     try:
         cap = int(c.arg_value(argv, "--max", "300"))

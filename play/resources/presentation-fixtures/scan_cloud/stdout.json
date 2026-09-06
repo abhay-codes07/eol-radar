@@ -1,1 +1,1 @@
-{"files_scanned": 0, "ok": true, "subjects": [], "surface": "cloud", "warning": "no deployment manifests found (serverless, SAM, Terraform, CDK, Vercel, Netlify)"}
+{"files_scanned": 0, "full_output": "work/cloud.json", "ok": true, "subjects_count": 0, "surface": "cloud", "unreadable": [], "unreadable_count": 0, "warning": "no deployment manifests found (serverless, SAM, Terraform, CDK, Vercel, Netlify)"}

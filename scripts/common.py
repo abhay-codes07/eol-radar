@@ -25,27 +25,50 @@ SKIP_DIRS = {
 MAX_FILE_BYTES = 8 * 1024 * 1024
 
 
+# The keys whose size grows with the repository. With --out they go to the
+# file and stdout carries their count instead.
+UNBOUNDED_KEYS = ("subjects", "facts")
+
+
+def digest(payload, target):
+    """The stdout view of a result that was written to a file: every scalar
+    and every small field, the unbounded lists as counts, and the file path."""
+    view = {}
+    for key, value in payload.items():
+        if key in UNBOUNDED_KEYS and isinstance(value, (list, dict)):
+            view[key + "_count"] = len(value)
+        else:
+            view[key] = value
+    view["full_output"] = target
+    return view
+
+
 def emit(payload):
     """Write the step result as one canonical JSON line.
 
-    If the step was given --out PATH, the same JSON is also written there. A
-    Play step is a bare exec with no shell, so it cannot redirect stdout, and
-    the next step needs a file to read.
+    Without --out, stdout is the whole result, which is what the command line
+    runner and the tests read. With --out PATH the whole result goes to the
+    file and stdout carries a digest of it. A Play step is a bare exec with no
+    shell, so it cannot redirect stdout, the next step needs a file to read,
+    and rote keeps only the first 65,536 bytes of a step's stdout: the digest
+    never grows past a few hundred bytes, so the preview a reader sees is
+    never cut, and nothing downstream depends on it.
     """
-    text = json.dumps(payload, sort_keys=True) + "\n"
-    sys.stdout.write(text)
     target = arg_value(sys.argv[1:], "--out")
-    if target:
-        directory = os.path.dirname(os.path.abspath(target))
-        try:
-            # Five scanners start at the same instant inside a Play and all
-            # create work/ together; exist_ok keeps the second one from failing.
-            if directory:
-                os.makedirs(directory, exist_ok=True)
-            with open(target, "w", encoding="utf-8") as handle:
-                handle.write(text)
-        except OSError as error:
-            fail("could not write " + target + ": " + str(error))
+    if not target:
+        sys.stdout.write(json.dumps(payload, sort_keys=True) + "\n")
+        return
+    directory = os.path.dirname(os.path.abspath(target))
+    try:
+        # Five scanners start at the same instant inside a Play and all
+        # create work/ together; exist_ok keeps the second one from failing.
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        with open(target, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, sort_keys=True) + "\n")
+    except OSError as error:
+        fail("could not write " + target + ": " + str(error))
+    sys.stdout.write(json.dumps(digest(payload, target), sort_keys=True) + "\n")
 
 
 def fail(message, code=1):
@@ -55,19 +78,43 @@ def fail(message, code=1):
 
 
 def ok(surface, subjects, warning=None, scanned=0):
+    unreadable = sorted(set(UNREADABLE))
     return {
         "ok": True,
         "surface": surface,
         "subjects": subjects,
         "warning": warning,
         "files_scanned": scanned,
+        # Directories the walk could not open. A scan that skipped them in
+        # silence would be a partial scan reported as a complete one.
+        "unreadable": unreadable[:50],
+        "unreadable_count": len(unreadable),
     }
 
 
-def check_root(root):
-    """Validate the scan root once, the same way in every scanner."""
+WORKSPACE_MARK = os.sep + ".rote" + os.sep + "workspaces" + os.sep
+
+
+def check_root(root, in_play=False):
+    """Validate the scan root once, the same way in every scanner.
+
+    Inside a Play (--in-play) a step's working directory is rote's run
+    workspace, never the caller's shell. A relative root such as `.` would
+    therefore scan the workspace and report on rote's own scratch files with a
+    straight face, which is a failure that reads as a success. It is refused,
+    with the command that works instead.
+    """
     if not root:
-        fail("root is empty; pass root=<path to a repository>")
+        fail("root is empty; pass root=<absolute path to a repository>")
+    if in_play:
+        if not os.path.isabs(root):
+            fail("root=" + str(root) + " is relative. Inside a Play it resolves against rote's run "
+                 "workspace (" + os.getcwd() + "), not your shell, so it would never reach your "
+                 "repository. Pass an absolute path: root=$PWD or root=/path/to/repo")
+        if WORKSPACE_MARK in os.path.abspath(root) + os.sep:
+            fail("root=" + str(root) + " is inside rote's workspace directory, which holds this run's "
+                 "own scratch files, not your repository. Pass an absolute path to the repository: "
+                 "root=$PWD or root=/path/to/repo")
     if not os.path.isdir(root):
         fail("root is not a directory: " + str(root))
     return os.path.abspath(root)
@@ -109,11 +156,26 @@ def read_json(path):
         return None
 
 
+# Directories os.walk could not open in this process, repo-relative. os.walk
+# ignores such errors by default; every scanner carries this list in its
+# result instead, and join reports the scan as partial.
+UNREADABLE = []
+
+
+def _note_unreadable(root):
+    def handler(error):
+        path = getattr(error, "filename", None) or str(error)
+        UNREADABLE.append(rel(root, path))
+    return handler
+
+
 def iter_files(root, max_depth=8):
-    """Yield absolute paths under root, skipping vendored and generated trees."""
+    """Yield absolute paths under root, skipping vendored and generated trees.
+    A directory that cannot be opened is recorded in UNREADABLE, not skipped
+    in silence."""
     root = os.path.abspath(root)
     base_depth = root.rstrip(os.sep).count(os.sep)
-    for dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in os.walk(root, onerror=_note_unreadable(root)):
         depth = dirpath.rstrip(os.sep).count(os.sep) - base_depth
         if depth >= max_depth:
             dirnames[:] = []

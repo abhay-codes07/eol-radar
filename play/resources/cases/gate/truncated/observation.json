@@ -15,12 +15,12 @@
     },
     "timed_out": false,
     "duration_ms": 5,
-    "timeout_ms": 120000
+    "timeout_ms": 30000
    },
    "stdout": {
-    "bytes": 100094,
-    "text": "{\"files_scanned\": 4, \"full_output\": \"work/packages.json\", \"ok\": true, \"subjects_count\": 20, \"s",
-    "preview_bytes": 94,
+    "bytes": 100132,
+    "text": "{\"dead\": 4, \"dying\": 11, \"fail_on\": \"none\", \"summary\": \"EOL Radar: 3 dead at 4 places \\u00b7 8 dying <=90d at 11 places \\u00b7 0 wat",
+    "preview_bytes": 132,
     "truncated": true,
     "encoding": "utf8"
    },

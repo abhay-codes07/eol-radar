@@ -38,7 +38,7 @@ REPO = os.path.dirname(HERE)
 PACKAGE_SCRIPTS = [
     "common.py", "eol_data.py",
     "scan_runtimes.py", "scan_containers.py", "scan_ci.py", "scan_cloud.py", "scan_packages.py",
-    "resolve.py", "join.py", "migrate.py", "ownership.py",
+    "resolve.py", "join.py", "gate.py", "migrate.py", "ownership.py",
 ]
 PACKAGE_DATA = ["enforcement.json"]
 EVIDENCE_DIRS = ["presentation-fixtures", "cases"]

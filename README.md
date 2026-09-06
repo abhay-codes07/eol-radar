@@ -84,18 +84,28 @@ EOL Radar is published as a [rote](https://www.modiqo.ai) Play, so it can be run
 from any agent harness, inspected before it runs, and scheduled. The package on
 the registry contains the whole scanner: the same scripts as this repository,
 under `resources/`, invoked with the system `python3`. Nothing is fetched at run
-time and `python3` is the only host tool.
+time, `python3` is the only host tool, and the only writes are the run's own
+`work/` directory.
 
 ```bash
 rote play inspect https://play.modiqo.ai/abhay-codes07/eol-radar
-rote play run https://play.modiqo.ai/abhay-codes07/eol-radar root=/path/to/your/repo --yes
+rote play run https://play.modiqo.ai/abhay-codes07/eol-radar root=$PWD --yes
 ```
 
-Four optional parameters: `root`, `horizon_days`, `max_packages`, `fail_on`.
-The package is built from this repository by `play/pack.py`, ships a recorded
-presentation fixture and three negative cases for every step, and passes
-`rote play lint`, `play audit run` (0 findings) and `play audit rehearse`
-(21 of 21 negative cases). `docs/PLAY.md` is the runbook.
+`root` must be an absolute path. A step inside a Play runs in rote's workspace,
+not in your shell, so `root=.` is refused with the command that works. The
+other three parameters are optional: `horizon_days`, `max_packages`, and
+`fail_on`, which fails the run in a gate step of its own so the report is
+rendered either way.
+
+Eight steps in four layers: five filesystem scanners in parallel, one network
+resolve, one join, one gate. The package is built from this repository by
+`play/pack.py`, ships a recorded presentation fixture and three negative cases
+for every step, and on the published package: `rote play lint` clean,
+`rote play score` 1.00, `play audit run` 0 findings, `play audit rehearse`
+24 of 24 negative cases, `sookra/reach-check` declared 1 reached 1,
+`sookra/quiet-check` 0 places where a failure would read as a clean result.
+`docs/PLAY.md` is the runbook.
 
 ## Install
 
@@ -362,7 +372,7 @@ python scripts/scan_ci.py --root . | python -m json.tool
 python -m unittest discover -s tests -v
 ```
 
-119 tests, no network, fixed clock. The verdict engine is tested against a stub
+139 tests, no network, fixed clock. The verdict engine is tested against a stub
 fact set so the expected output does not change when endoflife.date publishes a
 new release. Verified on Python 3.10 (Windows) and 3.12 (Linux).
 

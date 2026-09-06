@@ -1,1 +1,1 @@
-{"files_scanned": 2, "ok": true, "subjects": [], "surface": "runtimes", "warning": "no runtime pin files found (.nvmrc, .python-version, engines, go.mod, ...)"}
+{"files_scanned": 2, "full_output": "work/runtimes.json", "ok": true, "subjects_count": 0, "surface": "runtimes", "unreadable": [], "unreadable_count": 0, "warning": "no runtime pin files found (.nvmrc, .python-version, engines, go.mod, ...)"}

@@ -1,1 +1,1 @@
-{"files_scanned": 0, "ok": true, "subjects": [], "surface": "containers", "warning": "no Dockerfile, compose or devcontainer files found"}
+{"files_scanned": 0, "full_output": "work/containers.json", "ok": true, "subjects_count": 0, "surface": "containers", "unreadable": [], "unreadable_count": 0, "warning": "no Dockerfile, compose or devcontainer files found"}

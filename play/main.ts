@@ -3,16 +3,28 @@
  * @rote-frontmatter
  * ---
  * name: eol-radar
- * description: "One job: what in this repository stops working, and on what date. Reads runtime pins, base images, CI runners and actions (resolved to the Node runtime their action.yml really declares, so SHA pins are caught), cloud runtimes and packages, then prints everything with a death date, soonest first, with the exact version to move to. Outdated is not the same as dead: this is about dates a platform enforces, not the newest release. Read-only, no credentials, and the whole scanner ships inside this package: nothing is fetched at run time."
+ * description: "One job: what in this repository stops working, and on what date. Reads runtime pins, base images, CI runners and actions (resolved to the Node runtime their action.yml really declares, so SHA pins are caught), cloud runtimes and packages, then prints everything with a death date, soonest first, with the exact version to move to. Outdated is not the same as dead: this is about dates a platform enforces, not the newest release. Read-only, no credentials; the whole scanner ships inside this package and nothing is fetched at run time. root must be an absolute path: a step runs inside rote's workspace, not your shell."
  * source: https://github.com/abhay-codes07/eol-radar
+ * tags:
+ * - end-of-life
+ * - eol
+ * - deprecation
+ * - lifecycle
+ * - github-actions
+ * - node20
+ * - docker
+ * - lambda
+ * - dependencies
+ * - effect-read-only
+ * - domain-devops
+ * - job-lifecycle-audit
  * provenance:
  *   author: abhay-codes07 <abhaysingh0293@gmail.com>
  * parameters:
  *   - name: root
  *     type: string
- *     required: false
- *     default: '.'
- *     description: 'Repository to scan: a local path. Defaults to the current directory.'
+ *     required: true
+ *     description: 'Absolute path of the repository to scan, for example /home/you/project. A relative path such as . is refused: a step runs inside the rote workspace, not in your shell, so it would scan the wrong directory.'
  *   - name: horizon_days
  *     type: string
  *     required: false
@@ -27,9 +39,30 @@
  *     type: string
  *     required: false
  *     default: 'none'
- *     description: 'none, dying or dead. The run fails when a finding of that severity exists, for use as a CI gate.'
+ *     description: 'none, dying or dead. The gate step fails the run when a finding of that severity exists, for use as a CI gate; the report is rendered either way.'
+ * output:
+ *   format: json
+ *   schema:
+ *     type: object
+ *     properties:
+ *       run_id:
+ *         type: string
+ *       report:
+ *         type: object
+ *         description: the bounded play view of the report, with counts, distinct, findings, ledger, summary and the path of the complete report
+ *       gate:
+ *         type: object
+ *         description: status, fail_on and tripped for the CI gate step
+ *       degraded:
+ *         type: array
+ *         description: one line per upstream step that failed, was blocked or was skipped
+ *       notes:
+ *         type: array
+ *         description: one line per step whose stdout preview rote cut, with what was read from disk instead
+ *       steps:
+ *         type: object
  * metadata:
- *   version: 0.1.3
+ *   version: 0.1.7
  *   rote_version: "0.80.0"
  *   status: draft
  *   kind: atomic
@@ -47,11 +80,11 @@
  *     - docker
  *     - lambda
  *     - dependencies
- *     - read-only
+ *     - effect-read-only
  *   hardcode_audit:
  *     schema: 2
  *     suspicion_count: 3
- *     audit_sha256: eaf0312fac5c0311a3d46943c98467980c3edaf513025c7babeda9d88922d5fb
+ *     audit_sha256: 5a608495752f3dd56e5ab94193579a75d6a75430b7cd2adf60b49e6bcdb3ffec
  * presentation_fixtures:
  *   scan_runtimes: resources/presentation-fixtures/scan_runtimes/fixture.yaml
  *   scan_containers: resources/presentation-fixtures/scan_containers/fixture.yaml
@@ -60,6 +93,7 @@
  *   scan_packages: resources/presentation-fixtures/scan_packages/fixture.yaml
  *   resolve: resources/presentation-fixtures/resolve/fixture.yaml
  *   join: resources/presentation-fixtures/join/fixture.yaml
+ *   gate: resources/presentation-fixtures/gate/fixture.yaml
  * steps:
  *   scan_runtimes:
  *     type: process.exec
@@ -72,6 +106,7 @@
  *     - $root
  *     - --out
  *     - work/runtimes.json
+ *     - --in-play
  *   scan_containers:
  *     type: process.exec
  *     timeout_ms: 60000
@@ -83,6 +118,7 @@
  *     - $root
  *     - --out
  *     - work/containers.json
+ *     - --in-play
  *   scan_ci:
  *     type: process.exec
  *     timeout_ms: 60000
@@ -94,6 +130,7 @@
  *     - $root
  *     - --out
  *     - work/ci.json
+ *     - --in-play
  *   scan_cloud:
  *     type: process.exec
  *     timeout_ms: 60000
@@ -105,6 +142,7 @@
  *     - $root
  *     - --out
  *     - work/cloud.json
+ *     - --in-play
  *   scan_packages:
  *     type: process.exec
  *     timeout_ms: 120000
@@ -118,6 +156,7 @@
  *     - $max_packages
  *     - --out
  *     - work/packages.json
+ *     - --in-play
  *   resolve:
  *     type: process.exec
  *     timeout_ms: 300000
@@ -131,6 +170,8 @@
  *     - work/ci.json
  *     - work/cloud.json
  *     - work/packages.json
+ *     - --cache
+ *     - work/cache
  *     - --out
  *     - work/facts.json
  *   join:
@@ -152,21 +193,33 @@
  *     - $root
  *     - --horizon
  *     - $horizon_days
- *     - --fail-on
- *     - $fail_on
  *     - --output
  *     - play
  *     - --out
  *     - work/report.json
+ *   gate:
+ *     type: process.exec
+ *     timeout_ms: 30000
+ *     depends_on: [join]
+ *     argv:
+ *     - python3
+ *     - -B
+ *     - '@resource{scripts/gate.py}'
+ *     - --report
+ *     - work/report.json
+ *     - --fail-on
+ *     - $fail_on
  * ---
  */
 
-// Seven steps in three layers. The five scanners are independent root steps
+// Eight steps in four layers. The five scanners are independent root steps
 // that read only the filesystem under $root and write their findings into the
 // run workspace; resolve is the one step that touches the network (public,
-// keyless APIs, read-only); join turns facts into verdicts. Every script lives
-// under resources/ in this package, invoked with python3 -B so that Python
-// writes no bytecode into the package directory.
+// keyless APIs, read-only, cached inside the workspace); join turns facts into
+// verdicts; gate is the CI gate, its own step so that a tripped gate fails the
+// run without hiding the report. Every script lives under resources/ in this
+// package, invoked with python3 -B so that Python writes no bytecode into the
+// package directory.
 
 const presentationSdk = await import("__ROTE_PRESENTATION_SDK__").catch((cause) => {
   throw new Error(
@@ -183,21 +236,32 @@ const ctx = await loadPresentationContext();
 // else contributes its status, so a partial run still renders honestly.
 type StepView = { status: string; body?: unknown; message?: string; reason?: string };
 
-// A failed step carries its reason as output.message; some failures (a
-// missing interpreter, a timeout) arrive as output.diagnostic instead. Read
-// both, so the failure view never says "failed" without saying why.
+// A failed step carries its reason as output.message and the runner's own
+// diagnosis as output.diagnostic (exit kind, timeout, stderr). A timeout has
+// to read as a timeout, never as a bad input.
 function failureText(output: Record<string, unknown>): string {
-  const message = output.message;
-  if (typeof message === "string" && message.trim()) return message;
+  let diag = "";
   const diagnostic = output.diagnostic;
-  if (typeof diagnostic === "string" && diagnostic.trim()) return diagnostic;
   if (diagnostic && typeof diagnostic === "object") {
     const d = diagnostic as Record<string, unknown>;
-    const parts = [d.code, d.message, d.summary, d.detail].filter((p) => typeof p === "string" && p);
-    if (parts.length) return parts.join(": ");
-    try { return JSON.stringify(diagnostic).slice(0, 300); } catch { /* fall through */ }
+    const exit = d.exit && typeof d.exit === "object" ? d.exit as Record<string, unknown> : null;
+    if (exit?.kind === "timed_out") {
+      diag = `timed out after ${exit.timeout_ms ?? d.timeout_ms ?? "the step's"} ms`;
+    } else if (exit?.kind === "signal") {
+      diag = `killed by signal ${exit.signal ?? ""}`.trim();
+    }
+    const stderr = typeof d.stderr === "string" ? d.stderr.trim() : "";
+    if (stderr) diag = diag ? `${diag}; stderr: ${stderr}` : stderr;
+    if (!diag) {
+      const parts = [d.code, d.message, d.summary, d.detail].filter((p) => typeof p === "string" && p);
+      if (parts.length) diag = parts.join(": ");
+    }
+  } else if (typeof diagnostic === "string") {
+    diag = diagnostic.trim();
   }
-  return "";
+  const message = typeof output.message === "string" ? output.message.trim() : "";
+  if (diag.startsWith("timed out")) return message ? `${diag} (${message})` : diag;
+  return message || diag;
 }
 
 function view(step: ReturnType<typeof ctx.step>): StepView {
@@ -226,18 +290,18 @@ steps["scan_cloud"] = view(ctx.step(stepName("scan_cloud")));
 steps["scan_packages"] = view(ctx.step(stepName("scan_packages")));
 steps["resolve"] = view(ctx.step(stepName("resolve")));
 steps["join"] = view(ctx.step(stepName("join")));
+steps["gate"] = view(ctx.step(stepName("gate")));
 
-// The report is join's stdout. Read it defensively: a process body carries
-// stdout.text, and a very large report may be truncated with the full text
-// kept as an artifact.
+// A process body carries stdout.text; rote keeps 65,536 bytes of it and sets
+// truncated when the process wrote more, with the whole text in an artifact.
+// Trust the flag, and also the byte count: a preview shorter than the process
+// wrote is cut whatever the flag says.
 function stdoutOf(body: unknown): { text: string | null; truncated: boolean; bytes: number | null; artifact: string | null } {
   const b = body as { stdout?: { text?: unknown; bytes?: unknown; truncated?: unknown; artifact?: { path?: unknown } } } | null;
   const so = b && typeof b === "object" ? b.stdout : undefined;
   if (!so || typeof so !== "object") return { text: null, truncated: false, bytes: null, artifact: null };
   const text = typeof so.text === "string" ? so.text : null;
   const bytes = typeof so.bytes === "number" ? so.bytes : null;
-  // rote keeps 65,536 bytes of a step's stdout in the preview. Trust the flag,
-  // and also the byte count: a preview shorter than the process wrote is cut.
   const truncated = so.truncated === true ||
     (bytes !== null && text !== null && bytes > new TextEncoder().encode(text).length);
   return {
@@ -248,23 +312,29 @@ function stdoutOf(body: unknown): { text: string | null; truncated: boolean; byt
   };
 }
 
-// Anything short of a clean, complete upstream step is said out loud: a
-// scanner that failed or was blocked leaves a surface unscanned, and a
-// preview that rote cut off is not the whole observation. join reads the
-// scanners' files from the run workspace rather than their previews, so the
-// report itself can still be complete; the reader is told either way.
-const UPSTREAM = ["scan_runtimes", "scan_containers", "scan_ci", "scan_cloud", "scan_packages", "resolve"];
+// Two different things can be wrong upstream, and they are kept apart. A
+// scanner that failed, was blocked or was skipped left a surface unscanned:
+// that makes the findings partial, and the report says INCOMPLETE. A preview
+// that rote cut is not data loss here: every step reads the previous step's
+// file from work/, never its preview, so the report is complete and the
+// reader is told where the whole text went.
 const degraded: string[] = [];
-for (const name of UPSTREAM) {
+const notes: string[] = [];
+for (const name of Object.keys(steps)) {
+  if (name === "join") continue;
   const v = steps[name];
   if (v.status === "completed") {
     const so = stdoutOf(v.body);
     if (so.truncated) {
-      degraded.push(`${name}: its stdout preview was truncated` +
-        (so.bytes !== null ? ` (${so.bytes} bytes written)` : "") +
-        `; the full text is in ${so.artifact ?? "the run artifacts"}`);
+      notes.push(`${name}: its stdout preview was truncated` +
+        (so.bytes !== null ? ` (${so.bytes} bytes written, 65536 kept)` : "") +
+        `; the next step reads ${name}'s file in work/, not the preview, so nothing was lost;` +
+        ` the full text is in ${so.artifact ?? "the run artifacts"}`);
     }
-  } else if (v.status === "failed") {
+    continue;
+  }
+  if (name === "gate") continue;   // the gate's failure is its verdict, rendered below
+  if (v.status === "failed") {
     degraded.push(`${name}: failed` + (v.message ? `: ${v.message}` : ""));
   } else if (v.status === "blocked") {
     degraded.push(`${name}: blocked, did not run` + (v.reason ? ` (${v.reason})` : ""));
@@ -274,6 +344,43 @@ for (const name of UPSTREAM) {
     degraded.push(`${name}: ${v.status}`);
   }
 }
+
+// The gate. Completed means it passed and printed its verdict; failed with
+// "fail_on=<x> tripped" on stderr means it did its job and the run fails on
+// purpose; any other failure is a fault and is named as one.
+type Gate = { status: string; fail_on: string | null; tripped: boolean | null; text: string };
+function readGate(v: StepView): Gate {
+  if (v.status === "completed") {
+    const so = stdoutOf(v.body);
+    let parsed: Record<string, unknown> | null = null;
+    try { parsed = so.text ? JSON.parse(so.text) as Record<string, unknown> : null; } catch { parsed = null; }
+    if (parsed && typeof parsed === "object") {
+      const failOn = String(parsed.fail_on ?? "none");
+      const tripped = parsed.tripped === true;
+      return tripped
+        ? { status: "tripped", fail_on: failOn, tripped: true, text: `GATE fail_on=${failOn} tripped` }
+        : { status: "passed", fail_on: failOn, tripped: false, text: `gate passed (fail_on=${failOn})` };
+    }
+    return { status: "unreadable", fail_on: null, tripped: null,
+      text: "the gate's verdict could not be read" + (so.truncated ? " (its preview was truncated)" : "") };
+  }
+  if (v.status === "failed") {
+    const m = v.message ?? "";
+    const match = m.match(/fail_on=(\w+) tripped/);
+    if (match) {
+      return { status: "tripped", fail_on: match[1], tripped: true,
+        text: `GATE TRIPPED: fail_on=${match[1]}. The run fails on purpose; the report above is complete.` };
+    }
+    return { status: "failed", fail_on: null, tripped: null, text: `gate failed: ${m || "no reason given"}` };
+  }
+  if (v.status === "blocked") {
+    return { status: "blocked", fail_on: null, tripped: null,
+      text: `gate blocked, did not run` + (v.reason ? ` (${v.reason})` : "") };
+  }
+  return { status: v.status, fail_on: null, tripped: null,
+    text: `gate ${v.status}` + (v.reason ? ` (${v.reason})` : "") };
+}
+const gate = readGate(steps["gate"]);
 
 type Finding = {
   status: string; what: string; where: string; date: string | null; days: number | null;
@@ -288,6 +395,7 @@ type Report = {
   findings: Finding[]; ledger: { source: string; status: string; note?: string }[];
   ownership?: { source?: string | null };
   summary?: string; ok_hidden?: number; findings_omitted?: number; full_report?: string | null;
+  unreadable?: Record<string, string[]>;
 };
 
 let report: Report | null = null;
@@ -299,15 +407,16 @@ if (joinView.status === "completed") {
     try {
       report = JSON.parse(so.text) as Report;
     } catch {
-      problem = "the report could not be parsed" +
-        (so.truncated ? `; stdout was truncated, the full text is at ${so.artifact ?? "the run artifacts"}` : "");
+      problem = so.truncated
+        ? `the report could not be parsed because its stdout preview was truncated` +
+          (so.bytes !== null ? ` (${so.bytes} bytes written, 65536 kept)` : "") +
+          `; the full text is at ${so.artifact ?? "the run artifacts"} and the complete report at work/report.json`
+        : "the report could not be parsed";
     }
   } else {
     problem = "the join step produced no output";
   }
 } else if (joinView.status === "failed") {
-  // fail_on tripped, or a real fault. join writes the reason to stderr, which
-  // is what the failure message carries.
   problem = joinView.message || "the join step failed";
 } else {
   problem = `the join step was ${joinView.status}` + (joinView.reason ? `: ${joinView.reason}` : "");
@@ -337,6 +446,10 @@ function whenText(f: Finding): string {
   return `  ${verb} ${f.date} (${rel})`;
 }
 
+function stepNames(lines: string[]): string {
+  return lines.map((d) => d.split(":")[0]).join(", ");
+}
+
 const SHOWN_PER_STATUS = 12;
 const humanLines: string[] = [];
 let summaryLine = "";
@@ -347,19 +460,47 @@ if (report) {
   humanLines.push(`EOL Radar | ${r.repo} | checked ${r.generated_at} | horizon ${r.horizon_days} days`);
   humanLines.push("=".repeat(Math.min(humanLines[0].length, 78)));
   humanLines.push("");
-  const bits = ORDER.filter((s) => (r.counts[s] ?? 0) > 0).map((s) => countPhrase(r, s));
-  humanLines.push("  " + (bits.length ? bits.join(" | ") : "nothing found to check"));
+  const observed = ORDER.some((s) => (r.counts[s] ?? 0) > 0);
+  if (observed) {
+    humanLines.push("  " + ORDER.filter((s) => (r.counts[s] ?? 0) > 0).map((s) => countPhrase(r, s)).join(" | "));
+  } else {
+    // An empty scan is a non-observation, not a clean one, and the most
+    // likely cause is a root that does not point at the repository.
+    humanLines.push("  Nothing to check: no runtime pins, base images, workflows, deployment");
+    humanLines.push("  manifests or package manifests were found under this root.");
+    humanLines.push("  That is a non-observation, not a clean bill of health. Check that root");
+    humanLines.push("  points at the repository, as an absolute path.");
+  }
   humanLines.push("");
 
-  if (degraded.length > 0) {
-    humanLines.push(`INCOMPLETE - ${degraded.length} step(s) did not complete cleanly; treat the findings as partial`);
+  // A directory a scanner could not open makes the scan partial. join names
+  // them; they are repeated here so the reader sees it before the findings.
+  const byDirectory = new Map<string, string[]>();
+  for (const [surface, dirs] of Object.entries(r.unreadable ?? {})) {
+    for (const d of dirs ?? []) byDirectory.set(d, [...(byDirectory.get(d) ?? []), surface]);
+  }
+  const unreadable = [...byDirectory.entries()].sort().map(([d, s]) => `${d} (${s.join(", ")})`);
+  if (unreadable.length > 0) {
+    humanLines.push(`PARTIAL - ${unreadable.length} director${unreadable.length === 1 ? "y" : "ies"} could not be read; this scan is incomplete`);
     humanLines.push("-".repeat(78));
-    for (const line of degraded) humanLines.push(`  ${line.slice(0, 200)}`);
+    for (const d of unreadable.slice(0, 10)) humanLines.push(`  ${d}`);
+    if (unreadable.length > 10) humanLines.push(`  and ${unreadable.length - 10} more`);
+    humanLines.push("");
+  }
+
+  if (gate.status !== "passed") {
+    humanLines.push(`GATE - ${gate.text}`);
+    humanLines.push("");
+  }
+  if (degraded.length > 0) {
+    humanLines.push(`INCOMPLETE - ${degraded.length} step(s) did not complete; a surface went unscanned, treat the findings as partial`);
+    humanLines.push("-".repeat(78));
+    for (const line of degraded) humanLines.push(`  ${line.slice(0, 220)}`);
     humanLines.push("");
   }
 
   const shown = r.findings.filter((f) => f.status !== "OK");
-  if (shown.length === 0) {
+  if (shown.length === 0 && observed) {
     humanLines.push("  Nothing in this repository is out of support or expiring inside the horizon.");
     humanLines.push("");
   }
@@ -404,6 +545,12 @@ if (report) {
   for (const row of r.ledger) {
     humanLines.push(`  ${row.status.padEnd(12)}${row.source.padEnd(28)}${row.note ?? ""}`);
   }
+  if (notes.length > 0) {
+    humanLines.push("");
+    humanLines.push("NOTES");
+    humanLines.push("-".repeat(78));
+    for (const line of notes) humanLines.push(`  ${line.slice(0, 260)}`);
+  }
   humanLines.push("");
   humanLines.push("Lifecycle dates from endoflife.date; package status from deps.dev and npm;");
   humanLines.push("action runtimes read from each action.yml at the pinned ref.");
@@ -419,14 +566,17 @@ if (report) {
     ((r.counts["UNKNOWN"] ?? 0) > 0 ? ` | ${r.counts["UNKNOWN"]} unknown` : "") +
     ` | repo=${r.repo} | ${r.generated_at}` +
     (soonest ? ` | next: ${soonest.what} ${soonest.date}` : ""));
-  if (degraded.length > 0) {
-    summaryLine += ` · incomplete: ${degraded.map((d) => d.split(":")[0]).join(", ")}`;
-  }
+  if (gate.status === "tripped") summaryLine += ` · gate tripped (fail_on=${gate.fail_on})`;
+  else if (gate.status !== "passed") summaryLine += ` · gate ${gate.status}`;
+  if (degraded.length > 0) summaryLine += ` · incomplete: ${stepNames(degraded)}`;
+  if (notes.length > 0) summaryLine += ` · preview truncated: ${stepNames(notes)}`;
 
   resultBody = {
     run_id: ctx.run.run_id,
     report: r,
+    gate: { status: gate.status, fail_on: gate.fail_on, tripped: gate.tripped },
     degraded,
+    notes,
     steps: Object.fromEntries(Object.entries(steps).map(([k, v]) => [k, v.status])),
   };
 } else {
@@ -437,13 +587,20 @@ if (report) {
   humanLines.push("-".repeat(78));
   for (const [name, v] of Object.entries(steps)) {
     const detail = v.message ?? v.reason ?? "";
-    humanLines.push(`  ${v.status.padEnd(11)}${name.padEnd(18)}${detail.slice(0, 160)}`);
+    humanLines.push(`  ${v.status.padEnd(11)}${name.padEnd(18)}${detail.slice(0, 200)}`);
   }
-  summaryLine = `EOL Radar: no report; ${problem.slice(0, 140)}`;
+  if (notes.length > 0) {
+    humanLines.push("");
+    for (const line of notes) humanLines.push(`  ${line.slice(0, 260)}`);
+  }
+  summaryLine = `EOL Radar: no report; ${problem.slice(0, 160)}`;
+  if (degraded.length > 0) summaryLine += ` · incomplete: ${stepNames(degraded)}`;
   resultBody = {
     run_id: ctx.run.run_id,
     error: problem,
+    gate: { status: gate.status, fail_on: gate.fail_on, tripped: gate.tripped },
     degraded,
+    notes,
     steps: Object.fromEntries(Object.entries(steps).map(([k, v]) => [k, { status: v.status, message: v.message ?? v.reason ?? null }])),
   };
 }

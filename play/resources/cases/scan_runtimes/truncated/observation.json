@@ -18,9 +18,9 @@
     "timeout_ms": 60000
    },
    "stdout": {
-    "bytes": 100080,
-    "text": "{\"files_scanned\": 2, \"ok\": true, \"subjects\": [], \"surface\": \"runtimes\", \"warning",
-    "preview_bytes": 80,
+    "bytes": 100122,
+    "text": "{\"files_scanned\": 2, \"full_output\": \"work/runtimes.json\", \"ok\": true, \"subjects_count\": 0, \"surface\": \"runtimes\", \"unreada",
+    "preview_bytes": 122,
     "truncated": true,
     "encoding": "utf8"
    },
