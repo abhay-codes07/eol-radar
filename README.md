@@ -321,8 +321,10 @@ date and the block-update date. It does not publish block-create, which lands
 first, so that is the one the calendar adds.
 
 `GITHUB_TOKEN` is optional and never required. Without it the archived-upstream
-check runs inside the anonymous 60-requests-per-hour budget and says so in the
-ledger when it stops early.
+check runs inside the anonymous 60-requests-per-hour budget. When the budget
+stops the check short of the repositories it was asked about, the ledger row
+reads `degraded` and says how many of how many were not checked, with or
+without a token; fifteen of three hundred is not `ok`.
 
 ## Reading the ledger
 
@@ -372,7 +374,7 @@ python scripts/scan_ci.py --root . | python -m json.tool
 python -m unittest discover -s tests -v
 ```
 
-139 tests, no network, fixed clock. The verdict engine is tested against a stub
+144 tests, no network, fixed clock. The verdict engine is tested against a stub
 fact set so the expected output does not change when endoflife.date publishes a
 new release. Verified on Python 3.10 (Windows) and 3.12 (Linux).
 

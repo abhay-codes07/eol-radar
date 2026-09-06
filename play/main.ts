@@ -62,7 +62,7 @@
  *       steps:
  *         type: object
  * metadata:
- *   version: 0.1.7
+ *   version: 0.1.8
  *   rote_version: "0.80.0"
  *   status: draft
  *   kind: atomic

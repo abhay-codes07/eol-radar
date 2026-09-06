@@ -18,9 +18,9 @@
     "timeout_ms": 300000
    },
    "stdout": {
-    "bytes": 100385,
-    "text": "{\"authenticated_github\": false, \"facts_count\": 31, \"full_output\": \"work/facts.json\", \"http\": {\"errors\": 0, \"fetches\": 0, \"hits\": 100, \"skipped\": 0}, \"ledger\": [{\"attempted\": 2, \"degraded\": 0, \"note\": \"release cycles for 2 products\", \"source\": \"endoflife.date\", \"status\": \"ok\"}, {\"attempted\": 9, \"degraded\": 0, \"note\": \"declared runtime for 9 action refs\", \"source\": \"github actions (ac",
-    "preview_bytes": 385,
+    "bytes": 100414,
+    "text": "{\"authenticated_github\": false, \"facts_count\": 31, \"full_output\": \"work/facts.json\", \"http\": {\"errors\": 24, \"fetches\": 100, \"hits\": 0, \"skipped\": 0}, \"ledger\": [{\"attempted\": 2, \"degraded\": 0, \"note\": \"release cycles for 2 products\", \"source\": \"endoflife.date\", \"status\": \"ok\"}, {\"attempted\": 9, \"degraded\": 0, \"note\": \"declared runtime for 9 action refs\", \"source\": \"github actions (action.yml)\", \"status\": \"ok\"},",
+    "preview_bytes": 414,
     "truncated": true,
     "encoding": "utf8"
    },

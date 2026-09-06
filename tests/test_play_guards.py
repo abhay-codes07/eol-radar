@@ -220,6 +220,44 @@ class TestPartialTraversal(unittest.TestCase):
             shutil.rmtree(workspace, ignore_errors=True)
 
 
+class TestArchivedCoverageRow(unittest.TestCase):
+    """The archived-upstream row reports coverage, not just the lookups it made.
+
+    Chi blú (sookra) ran 0.1.7 on a repository with 300 packages and found the
+    row read 'ok' after checking 15 of them, with the shortfall only in the
+    note, and only when no token was set."""
+
+    def test_a_budget_shortfall_is_degraded_not_ok(self):
+        row = resolve.archived_row(15, 285, 0, 15, authenticated=False)
+        self.assertEqual(row["status"], "degraded")
+        self.assertEqual((row["checked"], row["skipped"]), (15, 285))
+        self.assertIn("285 of 300 not checked", row["note"])
+        self.assertIn("GITHUB_TOKEN", row["note"])
+
+    def test_a_token_does_not_make_the_shortfall_disappear(self):
+        row = resolve.archived_row(200, 100, 0, 200, authenticated=True)
+        self.assertEqual(row["status"], "degraded")
+        self.assertIn("100 of 300 not checked", row["note"])
+        self.assertIn("--github-budget", row["note"])
+
+    def test_full_coverage_is_ok_and_no_candidates_is_skipped(self):
+        self.assertEqual(resolve.archived_row(12, 0, 0, 15, authenticated=False)["status"], "ok")
+        self.assertEqual(resolve.archived_row(0, 0, 0, 15, authenticated=False)["status"], "skipped")
+
+    def test_nothing_checked_of_many_is_unavailable(self):
+        self.assertEqual(resolve.archived_row(0, 40, 0, 0, authenticated=False)["status"], "unavailable")
+
+    def test_shortfall_counts_repositories_not_package_rows(self):
+        candidates = [(0, "a/a", "pkg:npm/x@1"), (1, "a/a", "pkg:npm/y@1"),
+                      (1, "b/b", "pkg:npm/z@1"), (2, "c/c", "pkg:npm/w@1")]
+        chosen, skipped = resolve.choose_upstreams(candidates, 1)
+        self.assertEqual(chosen, [("a/a", "pkg:npm/x@1")])
+        self.assertEqual(skipped, 2)
+        chosen, skipped = resolve.choose_upstreams(candidates, 10)
+        self.assertEqual(len(chosen), 3)
+        self.assertEqual(skipped, 0)
+
+
 class TestRateLimitPhrase(unittest.TestCase):
     def test_reset_time_is_named_when_github_gives_one(self):
         self.assertEqual(resolve._reset_phrase("0"), "; resets 00:00 UTC")

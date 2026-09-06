@@ -528,14 +528,7 @@ def main(argv):
         lookup = packages.get(key[4:], {})
         candidates.append((0 if fact.get("deprecated") else (1 if lookup.get("direct") else 2), repo_id, key))
     candidates.sort()
-    chosen, seen_repos = [], set()
-    for _rank, repo_id, key in candidates:
-        if repo_id in seen_repos:
-            continue
-        seen_repos.add(repo_id)
-        chosen.append((repo_id, key))
-        if len(chosen) >= budget:
-            break
+    chosen, skipped = choose_upstreams(candidates, budget)
     archived_facts = run_parallel(chosen, lambda pair: (pair[0], fetch_archived(http, pair[0], token)),
                                   min(workers, 4))
     archived_by_repo = {}
@@ -548,11 +541,7 @@ def main(argv):
     for key, fact in facts.items():
         if key.startswith("pkg:") and isinstance(fact, dict) and fact.get("repo") in archived_by_repo:
             fact["upstream"] = archived_by_repo[fact["repo"]]
-    skipped = max(0, len(seen_repos) - len(chosen)) + max(0, len(candidates) - len(chosen))
-    note = "archived check for " + str(len(chosen)) + " upstream repositories"
-    if skipped and not token:
-        note += "; " + str(skipped) + " skipped (60 requests/hour unauthenticated: set GITHUB_TOKEN to raise it)"
-    ledger.append(_row("github (archived)", len(chosen), degraded_archived, note))
+    ledger.append(archived_row(len(chosen), skipped, degraded_archived, budget, bool(token)))
 
     c.emit({
         "ok": True,
@@ -561,6 +550,43 @@ def main(argv):
         "http": http.stats,
         "authenticated_github": bool(token),
     })
+
+
+def choose_upstreams(candidates, budget):
+    """The first `budget` distinct repositories in rank order, and how many
+    distinct repositories the budget left unchecked. Two packages from one
+    repository are one lookup, so the shortfall counts repositories, not
+    package rows."""
+    chosen, seen = [], set()
+    for _rank, repo_id, key in candidates:
+        if repo_id in seen:
+            continue
+        seen.add(repo_id)
+        if len(chosen) < budget:
+            chosen.append((repo_id, key))
+    return chosen, len(seen) - len(chosen)
+
+
+def archived_row(checked, skipped, degraded, budget, authenticated):
+    """The ledger row for the archived-upstream check.
+
+    Coverage is what this row's status means. A budget that stopped the
+    check at 15 of 300 repositories is a shortfall the same as a lookup that
+    failed, so every unchecked repository counts as degraded and the row
+    reads degraded (or unavailable, when nothing at all was checked), with
+    or without a token. The note says how many were not checked and how to
+    raise the budget; it is never conditional on who holds the token."""
+    note = "archived check for " + str(checked) + " upstream repositories"
+    if skipped:
+        note += ("; " + str(skipped) + " of " + str(checked + skipped) + " not checked (budget "
+                 + str(budget) + ": "
+                 + ("raise it with --github-budget" if authenticated
+                    else "60 requests/hour unauthenticated, set GITHUB_TOKEN to raise it")
+                 + ")")
+    row = _row("github (archived)", checked + skipped, degraded + skipped, note)
+    row["checked"] = checked
+    row["skipped"] = skipped
+    return row
 
 
 def _row(source, attempted, degraded, note):

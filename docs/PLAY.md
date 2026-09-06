@@ -1,6 +1,6 @@
 # Publishing EOL Radar as a rote Play
 
-Published on 6 September 2026 as `abhay-codes07/eol-radar@0.1.7`:
+Published on 6 September 2026 as `abhay-codes07/eol-radar@0.1.8`:
 https://play.modiqo.ai/abhay-codes07/eol-radar. This is the procedure that
 produced it and the procedure for the next version bump.
 
@@ -115,6 +115,12 @@ run other people's Plays, and each has a test in `tests/test_play_guards.py`:
   bill of health`, never `0 dead`.
 - **A GitHub rate-limit 403** is reported as the caller's quota with the
   reset time, not as a fact about the repository.
+- **The archived-upstream budget.** The check looks at the first N distinct
+  upstream repositories (15 anonymous, 200 with a token). Every repository the
+  budget left unchecked counts as degraded, so the row reads `degraded` with
+  `285 of 300 not checked` and how to raise the budget, whoever holds the
+  token. Chi blú (sookra) found this on 0.1.7: the row read `ok` with the
+  shortfall in the note only, and only when no token was set.
 
 ## The package is built from this repository
 
@@ -218,7 +224,7 @@ rote play run eol-radar root=$T --output=summary            # one line, same fac
 rote play run eol-radar root=$T --output=json               # the whole report under .report
 ```
 
-All of these were run against 0.1.7 before it was pushed. The offline suite
+All of these were run against 0.1.8 before it was pushed. The offline suite
 covers the same ground without rote: `python3 -m unittest discover -s tests`.
 
 ## Schedule it
@@ -228,7 +234,7 @@ Explicitly rewarded, and this Play is built for it: the countdown to
 
 ```bash
 play recurring probe
-play recurring schedule --reference abhay-codes07/eol-radar@0.1.7 --cadence daily --for 6d \
+play recurring schedule --reference abhay-codes07/eol-radar@0.1.8 --cadence daily --for 6d \
   --parameter root=/path/to/your/repo --cwd /path/to/your/repo \
   --why "Daily death calendar for my own repo: counts down to the Node 20 runner removal on 2026-09-23"
 play recurring list
@@ -251,3 +257,10 @@ The third was `root=.` in the launch tweet. It ran, it printed fourteen dead
 things, and every one of them belonged to rote's workspace. A confident answer
 about the wrong directory is worse than no answer, which is why 0.1.4 refuses
 it and says what to pass.
+
+The fourth came from a reviewer running 0.1.7 on a repository of theirs. The
+archived-upstream check had looked at 15 of 300 repositories and the ledger
+row read `ok`, because its status was computed from the lookups made, and
+the 285 not made were only text in the note. A row that means coverage has
+to be scored on coverage; 0.1.8 counts every unchecked repository as
+degraded and says so with or without a token.
